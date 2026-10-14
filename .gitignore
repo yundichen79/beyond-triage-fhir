@@ -1,0 +1,25 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local datasets and training artifacts
+data/raw/
+checkpoints/
+outputs/
+wandb/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
