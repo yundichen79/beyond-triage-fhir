@@ -1,0 +1,22 @@
+{
+  "dataset_version": "clinical-v2",
+  "synthea_version": "v4.0.0",
+  "reference_date": "20261001",
+  "end_date": "20261001",
+  "state": "Massachusetts",
+  "patients_per_batch": 200,
+  "clinician_seed": 4880,
+  "batch_seeds": [
+    48802001,
+    48802002,
+    48802003,
+    48802004,
+    48802005
+  ],
+  "split_seed": "beyond-triage-v1",
+  "split_ratios": [
+    0.7,
+    0.15,
+    0.15
+  ]
+}

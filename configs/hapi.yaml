@@ -1,0 +1,36 @@
+# Dedicated ephemeral server. Values are supplied by dataset.live, not a shared DB.
+spring:
+  datasource:
+    url: ${BEYOND_FHIR_JDBC_URL}
+    username: beyond_fhir
+    password: ''
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    properties:
+      hibernate.dialect: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+      hibernate.search.enabled: false
+      hibernate.search.backend.type: lucene
+      hibernate.search.backend.directory.type: local-heap
+hapi:
+  fhir:
+    fhir_version: R4
+    server_address: ${BEYOND_FHIR_BASE_URL}
+    client_id_strategy: ALPHANUMERIC
+    # Resolve references across transaction chunks; later PUTs fill every placeholder.
+    enforce_referential_integrity_on_write: true
+    auto_create_placeholder_reference_targets: true
+    enforce_referential_integrity_on_delete: false
+    allow_external_references: true
+    advanced_lucene_indexing: false
+    search_index_full_text_enabled: false
+    narrative_enabled: false
+    mdm_enabled: false
+    # HAPI 8.8.0 also uses max_page_size as its fallback match-ID fetch limit.
+    # Keep that limit unlimited; our clients explicitly request 200 or <=50 rows.
+    max_page_size: 2147483647
+    # Start with a positive threshold above this cohort's largest patient search,
+    # avoiding the initial -1/deduplication path used by the failed live run.
+    # The terminal -1 allows larger charts; live counts still check completeness.
+    search_prefetch_thresholds: [100000, -1]
+    search-coord-core-pool-size: 4
+    search-coord-max-pool-size: 8

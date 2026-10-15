@@ -15,6 +15,9 @@ venv/
 
 # Local datasets and training artifacts
 data/raw/
+data/processed/
+vendor/
+*.log
 checkpoints/
 outputs/
 wandb/
@@ -23,3 +26,7 @@ wandb/
 .idea/
 .vscode/
 .DS_Store
+
+# Batch job logs
+logs/*
+!logs/.gitkeep
