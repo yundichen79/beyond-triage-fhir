@@ -7,7 +7,7 @@ The planned comparison evaluates a fixed workflow, a zero-shot Qwen3-8B ReAct ag
 and an agent trained with trajectory supervised fine-tuning (SFT). We measure
 answer accuracy alongside tool calls and token usage.
 
-[Proposal](docs/Beyond%20TRIAGE-FHIR.pdf) · [Question catalog](data/README.md) · [Dataset guide](docs/DATASET.md) · [Current report](docs/COHORT_200_REPORT.md)
+See the [question catalog](data/README.md) for dataset rules, fields, and examples.
 
 ## Current status
 
@@ -59,9 +59,15 @@ Only two processed files are kept under `data/processed/cohort-200/`:
 ### Build and validate
 
 Run from the repository root. Dataset commands use the Python standard library;
-Slurm launchers target Yale Bouchet. Data and artifacts are excluded from Git;
-fresh clones must first follow the [source-generation instructions](docs/DATASET.md#build-and-validate).
-With source bundles available:
+Slurm launchers target Yale Bouchet. Data and artifacts are excluded from Git.
+For a fresh clone, generate the source cohort first:
+
+```bash
+python3 -m dataset.cohort download
+sbatch scripts/generate_cohort.sbatch 1
+```
+
+Once generation finishes, or with preserved source bundles available:
 
 ```bash
 python3 -m dataset.questions --output data/processed/cohort-200 --replace
@@ -136,7 +142,6 @@ dataset/       Generation, answer rules, validation, and live verification
 pilot/         Agent loop, FHIR tools, scoring, and runner
 scripts/       Preparation and Slurm launchers
 tests/         Dataset, FHIR, and agent regression tests
-docs/          Proposal, dataset guide, and current report
 data/          Preserved raw cohort and processed dataset
 vendor/        Pinned artifacts and cached model
 outputs/       Current pilot result

@@ -1,9 +1,8 @@
 # Clinical QA dataset
 
 Detailed reference for the questions generated for Beyond TRIAGE-FHIR.
-See the [project README](../README.md) for the experiment and pilot commands, the
-[dataset guide](../docs/DATASET.md) for generation/verification procedures, and the
-[current report](../docs/COHORT_200_REPORT.md) for validation status.
+See the [project README](../README.md) for the experiment, dataset construction,
+live verification, and pilot commands.
 
 ## Cohort and files
 
@@ -156,164 +155,39 @@ or unfinished searches are not evidence of absence.
 
 ## Real question examples
 
-The examples below come from the **current training split**. They are selected
-for readability, not as a representative performance sample. Every answer block
-copies the complete stored `ground_truth_answer`; no patient values are invented.
+These questions come from the current training split. Patient IDs and the repeated
+record cutoff/status instructions are omitted for readability. The wording below
+is copied from the generated questions.
 
-To avoid repeating boilerplate, each displayed question omits its leading
-`Patient <id>.` and the common suffix:
+### Simple
 
-> Use records before 2026-10-02T00:00:00+00:00; use UTC times and only final,
-> amended, or corrected observations.
-
-The example ID locates its full question, patient reference, and evidence list in
-`questions.jsonl`. Expand each family to inspect its rules and actual answer.
-
-<details>
-<summary><strong>Conditions recorded for an inpatient stay</strong> — <code>inpatient_conditions</code> (simple)</summary>
-
-**Selection and meaning:** Select the most recent eligible completed inpatient encounter by its start time, then retrieve Conditions whose encounter reference points to it. Return coded concepts and onset dates. These are linked chart conditions, not an inferred principal diagnosis or reason for admission.
-
-**Question** — `inpatient_conditions_0dbd62a19577fab41a1d` · training split
+**Conditions recorded for an inpatient stay**
 
 > For the most recent completed inpatient stay, list its linked condition codes, names, and recorded
 > onset dates.
 
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "2022-11-21T08:12:44+00:00",
-  "conditions": [
-    {
-      "condition": {
-        "code": "399211009",
-        "name": "History of myocardial infarction (situation)",
-        "system": "http://snomed.info/sct"
-      },
-      "onset": "2022-11-21T09:48:02+00:00"
-    }
-  ],
-  "discharged_at": "2022-11-22T08:12:44+00:00"
-}
-```
-
-**Retrieval work:** Encounter → linked Condition records. Stored support: 1 Condition, 1 Encounter.
-
-</details>
-
-<details>
-<summary><strong>Medication orders linked to an inpatient stay</strong> — <code>inpatient_medications</code> (simple)</summary>
-
-**Selection and meaning:** Choose the latest eligible inpatient stay with at least one qualifying order. Keep orders with intent=order, excluding draft and entered-in-error records, and resolve inline or referenced Medication codes. Separate orders for the same product remain separate answer entries.
-
-**Question** — `inpatient_medications_105ebad64bd3136d038f` · training split
+**Medication orders linked to an inpatient stay**
 
 > For the most recent completed inpatient stay with at least one recorded non-draft, non-error
 > medication order, list linked medication orders: coded product, authored date, and current recorded
 > order status. Orders do not establish administration.
 
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "2013-01-09T20:45:39+00:00",
-  "discharged_at": "2013-01-12T04:34:39+00:00",
-  "orders": [
-    {
-      "medication": {
-        "code": "861467",
-        "name": "Meperidine Hydrochloride 50 MG Oral Tablet",
-        "system": "http://www.nlm.nih.gov/research/umls/rxnorm"
-      },
-      "ordered_at": "2013-01-09T23:34:39+00:00",
-      "recorded_status": "completed"
-    }
-  ]
-}
-```
-
-**Retrieval work:** Encounter → MedicationRequest → Medication when referenced. Stored support: 1 Encounter, 1 MedicationRequest.
-
-</details>
-
-<details>
-<summary><strong>Report-linked CBC results</strong> — <code>cbc_panel</code> (simple)</summary>
-
-**Selection and meaning:** Choose the latest qualifying CBC DiagnosticReport (LOINC 58410-2). Follow its result references for hemoglobin (718-7) and platelets (777-3), retaining measurement times. An unrelated newer Observation cannot replace a report-linked result.
-
-**Question** — `cbc_panel_05cbe8eec31181cd0fe5` · training split
+**Report-linked CBC results**
 
 > Review the latest final, amended, or corrected CBC report (LOINC 58410-2). Give its report time and
 > the hemoglobin (718-7, g/dL) and platelet (777-3, 10*3/uL) results referenced by that report,
 > including measurement times. Do not substitute unrelated observations.
 
-**Stored answer:**
-
-```json
-{
-  "hemoglobin": {
-    "status": "found",
-    "time": "2022-01-23T03:25:42+00:00",
-    "unit": "g/dL",
-    "value": "13.8"
-  },
-  "platelets": {
-    "status": "found",
-    "time": "2022-01-23T03:25:42+00:00",
-    "unit": "10*3/uL",
-    "value": "228.14"
-  },
-  "report_time": "2022-01-23T03:25:42+00:00"
-}
-```
-
-**Retrieval work:** DiagnosticReport → result references → Observation. Stored support: 1 DiagnosticReport, 2 Observation.
-
-</details>
-
-<details>
-<summary><strong>Blood pressure in the latest qualifying ambulatory visit</strong> — <code>outpatient_bp</code> (simple)</summary>
-
-**Selection and meaning:** Choose the latest finished AMB encounter with a qualifying linked systolic observation. Extract systolic (8480-6) and diastolic (8462-4) from observation codes or components. Select each measurement at its latest eligible time within that encounter.
-
-**Question** — `outpatient_bp_02247882a5d7727bf090` · training split
+**Blood pressure in the latest qualifying ambulatory visit**
 
 > For the most recent completed ambulatory encounter (class AMB) with a linked blood-pressure
 > observation, report the most recent final, amended, or corrected systolic and diastolic
 > blood-pressure measurements linked to that encounter, with values in mmHg and measurement times.
 > Report a missing record or missing numeric value explicitly.
 
-**Stored answer:**
+### Intermediate
 
-```json
-{
-  "diastolic": {
-    "status": "found",
-    "time": "2026-01-24T03:35:40+00:00",
-    "unit": "mm[Hg]",
-    "value": "54"
-  },
-  "systolic": {
-    "status": "found",
-    "time": "2026-01-24T03:35:40+00:00",
-    "unit": "mm[Hg]",
-    "value": "95"
-  },
-  "visit_started_at": "2026-01-24T03:35:40+00:00"
-}
-```
-
-**Retrieval work:** Encounter → linked Observation → component values. Stored support: 1 Encounter, 1 Observation.
-
-</details>
-
-<details>
-<summary><strong>Documented prescribing history before admission</strong> — <code>preadmission_treated_conditions</code> (intermediate)</summary>
-
-**Selection and meaning:** Use the latest completed inpatient stay. Include conditions with onset before admission and no recorded abatement before admission, supported by explicit Condition reasonReference links from qualifying orders in the preceding 365 days. Include the lower boundary; exclude admission itself. This establishes recorded prescribing history, not active disease or medication use.
-
-**Question** — `preadmission_treated_conditions_36ae21be0a6be1dad9c9` · training split
+**Documented prescribing history before admission**
 
 > Review treatment history before the most recent completed inpatient stay. Which conditions had
 > recorded onset before admission, no recorded abatement before admission, and an explicit Condition
@@ -323,201 +197,33 @@ The example ID locates its full question, patient reference, and evidence list i
 > documented treatment history if none exists. These records do not establish medication use or active
 > disease at admission.
 
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "2021-09-13T22:48:30+00:00",
-  "conditions_with_prior_orders": [
-    {
-      "abatement": null,
-      "condition": {
-        "code": "64859006",
-        "name": "Osteoporosis (disorder)",
-        "system": "http://snomed.info/sct"
-      },
-      "onset": "2015-07-12T21:42:28+00:00",
-      "orders": [
-        {
-          "medication": {
-            "code": "904419",
-            "name": "Alendronic acid 10 MG Oral Tablet",
-            "system": "http://www.nlm.nih.gov/research/umls/rxnorm"
-          },
-          "ordered_at": "2021-08-15T21:42:28+00:00"
-        }
-      ]
-    }
-  ],
-  "discharged_at": "2021-09-18T23:03:30+00:00"
-}
-```
-
-**Retrieval work:** Encounter → earlier MedicationRequest → reasonReference Condition; resolve medication. Stored support: 1 Condition, 1 Encounter, 1 MedicationRequest.
-
-</details>
-
-<details>
-<summary><strong>Ambulatory follow-up after discharge</strong> — <code>discharge_followup</code> (intermediate)</summary>
-
-**Selection and meaning:** Select the latest inpatient stay with a complete assigned follow-up window. Find the first finished AMB encounter strictly after discharge and no later than day 30, 60, or 90, as stated in the question. Return elapsed days and conditions linked to that visit, or followup=null.
-
-**Question** — `discharge_followup_f976eb33059a7307e8ec` · training split
+**Ambulatory follow-up after discharge**
 
 > For the most recent completed inpatient stay with a full 90-day window before the record cutoff,
 > identify the first completed ambulatory encounter strictly after discharge and no later than 90 days
 > afterward. Give its time, elapsed days rounded to one decimal, and linked conditions; otherwise
 > report no matching follow-up.
 
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "2015-10-06T15:18:31+00:00",
-  "discharged_at": "2015-10-13T15:33:31+00:00",
-  "followup": {
-    "conditions": [
-      {
-        "condition": {
-          "code": "65363002",
-          "name": "Otitis media (disorder)",
-          "system": "http://snomed.info/sct"
-        },
-        "onset": "2015-10-27T12:41:42+00:00"
-      }
-    ],
-    "days_after_discharge": "13.9",
-    "started_at": "2015-10-27T12:41:42+00:00"
-  }
-}
-```
-
-**Retrieval work:** Inpatient Encounter → bounded ambulatory Encounter search → linked Condition. Stored support: 1 Condition, 2 Encounter.
-
-</details>
-
-<details>
-<summary><strong>Medication products across two inpatient stays</strong> — <code>admission_medication_comparison</code> (intermediate)</summary>
-
-**Selection and meaning:** Select the two latest eligible inpatient stays and compare the sets of linked ordered products by coding system and product code. Return products in both stays, only the earlier stay, or only the later stay. There is no maximum gap between the two stays. Missing orders do not establish discontinuation.
-
-**Question** — `admission_medication_comparison_fe356de1ecf69fb0c0df` · training split
+**Medication products across two inpatient stays**
 
 > Compare coded medication products ordered during the two most recent completed inpatient stays.
 > Report products in both, only the earlier stay, and only the later stay. Match by coding system and
 > product code; absence does not establish discontinuation.
 
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "2012-06-29T00:35:04+00:00",
-  "discharged_at": "2012-07-04T00:50:04+00:00",
-  "previous_admitted_at": "2012-06-26T18:54:04+00:00",
-  "products": {
-    "both": [],
-    "only_first": [
-      {
-        "code": "861467",
-        "name": "Meperidine Hydrochloride 50 MG Oral Tablet",
-        "system": "http://www.nlm.nih.gov/research/umls/rxnorm"
-      }
-    ],
-    "only_second": []
-  }
-}
-```
-
-**Retrieval work:** Two Encounters → their MedicationRequests → medication code sets. Stored support: 2 Encounter, 1 MedicationRequest.
-
-</details>
-
-<details>
-<summary><strong>Explicitly documented procedure indications</strong> — <code>procedure_indications</code> (intermediate)</summary>
-
-**Selection and meaning:** Find the latest completed encounter with completed procedures having explicit Condition reasonReference links. Return those procedures, performed times, and their referenced condition indications. Same-encounter co-occurrence and procedure names do not establish an indication.
-
-**Question** — `procedure_indications_a868741a4ada3be31572` · training split
+**Explicitly documented procedure indications**
 
 > Find the most recent completed encounter containing completed procedures with explicit Condition
 > reasonReference links. List those procedures with codes, names, performed times, and their linked
 > condition indications. Exclude procedures without explicit Condition indication references; do not
 > infer indications from procedure names or conditions elsewhere in the encounter.
 
-**Stored answer:**
-
-```json
-{
-  "encounter_started_at": "2026-01-30T04:03:23+00:00",
-  "procedures": [
-    {
-      "indications": [
-        {
-          "code": "5602001",
-          "name": "Opioid abuse",
-          "system": "http://snomed.info/sct"
-        }
-      ],
-      "performed_at": "2026-01-30T04:03:23+00:00",
-      "procedure": {
-        "code": "408919008",
-        "name": "Psychosocial care (regime/therapy)",
-        "system": "http://snomed.info/sct"
-      }
-    }
-  ]
-}
-```
-
-**Retrieval work:** Encounter → Procedure → reasonReference Condition. Stored support: 1 Condition, 1 Encounter, 1 Procedure.
-
-</details>
-
-<details>
-<summary><strong>Explicitly documented prescribing indications</strong> — <code>medication_indications</code> (intermediate)</summary>
-
-**Selection and meaning:** Find the latest completed encounter with qualifying orders having explicit Condition reasonReference links. Resolve the medication product and each referenced condition. Exclude orders without such indication references; do not infer an indication from a drug name.
-
-**Question** — `medication_indications_08d7291612cdc91cb977` · training split
+**Explicitly documented prescribing indications**
 
 > Find the most recent completed encounter containing medication orders with explicit Condition
 > reasonReference links. List those coded medications and their linked condition indications. Exclude
 > orders without explicit indication references; do not infer indications from drug names.
 
-**Stored answer:**
-
-```json
-{
-  "encounter_started_at": "2026-08-27T11:56:46+00:00",
-  "orders": [
-    {
-      "indications": [
-        {
-          "code": "55822004",
-          "name": "Hyperlipidemia (disorder)",
-          "system": "http://snomed.info/sct"
-        }
-      ],
-      "medication": {
-        "code": "314231",
-        "name": "Simvastatin 10 MG Oral Tablet",
-        "system": "http://www.nlm.nih.gov/research/umls/rxnorm"
-      }
-    }
-  ]
-}
-```
-
-**Retrieval work:** Encounter → MedicationRequest → Condition and, when needed, Medication. Stored support: 1 Condition, 1 Encounter, 1 MedicationRequest.
-
-</details>
-
-<details>
-<summary><strong>Short-interval CBC comparison</strong> — <code>cbc_change</code> (intermediate)</summary>
-
-**Selection and meaning:** Find the latest qualifying CBC report with an earlier qualifying report in the preceding 90 days, including the lower boundary but excluding the same timestamp. Use the latest of those earlier reports. Follow each report’s own result references and calculate later-minus-earlier changes rounded to one decimal.
-
-**Question** — `cbc_change_9c66ae9f7d1ae786c162` · training split
+**Short-interval CBC comparison**
 
 > Review a short-interval CBC trend. Find the most recent final, amended, or corrected CBC report
 > (LOINC 58410-2) that has an earlier qualifying CBC report within the preceding 90 days, including
@@ -526,55 +232,9 @@ The example ID locates its full question, patient reference, and evidence list i
 > results and dates, and the later-minus-earlier changes rounded to one decimal. Do not substitute
 > reports farther apart or results from other reports; state any missing record or numeric value.
 
-**Stored answer:**
+### Complex
 
-```json
-{
-  "hemoglobin_change_g_dL": "3",
-  "latest": {
-    "hemoglobin": {
-      "status": "found",
-      "time": "2016-06-27T21:58:16+00:00",
-      "unit": "g/dL",
-      "value": "15.314"
-    },
-    "platelets": {
-      "status": "found",
-      "time": "2016-06-27T21:58:16+00:00",
-      "unit": "10*3/uL",
-      "value": "166.76"
-    },
-    "report_time": "2016-06-27T21:58:16+00:00"
-  },
-  "platelet_change_10_3_uL": "7",
-  "previous": {
-    "hemoglobin": {
-      "status": "found",
-      "time": "2016-06-27T09:17:14+00:00",
-      "unit": "g/dL",
-      "value": "12.364"
-    },
-    "platelets": {
-      "status": "found",
-      "time": "2016-06-27T09:17:14+00:00",
-      "unit": "10*3/uL",
-      "value": "159.72"
-    },
-    "report_time": "2016-06-27T09:17:14+00:00"
-  }
-}
-```
-
-**Retrieval work:** Select two DiagnosticReports → traverse each result set → compare values. Stored support: 2 DiagnosticReport, 4 Observation.
-
-</details>
-
-<details>
-<summary><strong>First-year HbA1c testing after recorded glycemic onset</strong> — <code>glycemic_followup</code> (complex)</summary>
-
-**Selection and meaning:** Anchor on the earliest recorded onset of type 2 diabetes (SNOMED 44054006) or prediabetes (714628002). Find the first eligible HbA1c (LOINC 4548-4) strictly after onset and before day 365. If present, compare with the latest eligible baseline in the 90 days up to and including onset. Require a full follow-up window; keep missing baseline and missing follow-up distinct.
-
-**Question** — `glycemic_followup_3dc9d97fa0dd08d70287` · training split
+**First-year HbA1c testing after recorded glycemic onset**
 
 > Review documented first-year glycemic testing after the first recorded onset of type 2 diabetes
 > (SNOMED 44054006) or prediabetes (714628002). Was HbA1c (LOINC 4548-4) measured strictly afterward
@@ -584,42 +244,7 @@ The example ID locates its full question, patient reference, and evidence list i
 > missing follow-up, missing baseline, and missing numeric values; do not infer treatment effect or
 > whether care met a guideline.
 
-**Stored answer:**
-
-```json
-{
-  "baseline": {
-    "status": "found",
-    "time": "2011-11-05T03:35:40+00:00",
-    "unit": "%",
-    "value": "5.93"
-  },
-  "change_percentage_points": "0.1",
-  "condition": {
-    "code": "714628002",
-    "name": "Prediabetes (finding)",
-    "system": "http://snomed.info/sct"
-  },
-  "followup": {
-    "status": "found",
-    "time": "2012-05-12T03:35:40+00:00",
-    "unit": "%",
-    "value": "6.01"
-  },
-  "onset": "2011-11-05T03:35:40+00:00"
-}
-```
-
-**Retrieval work:** Condition onset → bounded follow-up Observation search → conditional baseline search → difference. Stored support: 1 Condition, 2 Observation.
-
-</details>
-
-<details>
-<summary><strong>First-year creatinine follow-up</strong> — <code>renal_followup</code> (complex)</summary>
-
-**Selection and meaning:** Anchor on the first eligible creatinine measurement (LOINC 2160-0) linked to a completed AMB encounter. Find the first measurement strictly afterward and before day 365, then calculate follow-up minus baseline in mg/dL. Require the full follow-up window before the cutoff.
-
-**Question** — `renal_followup_f72f461fc08eea24ebb4` · training split
+**First-year creatinine follow-up**
 
 > Review documented first-year renal laboratory follow-up, starting with the first recorded final,
 > amended, or corrected creatinine measurement (LOINC 2160-0) linked to a completed ambulatory
@@ -629,36 +254,7 @@ The example ID locates its full question, patient reference, and evidence list i
 > from missing numeric values. This is a record review, not a judgment about recommended monitoring
 > intervals.
 
-**Stored answer:**
-
-```json
-{
-  "baseline": {
-    "status": "found",
-    "time": "2015-05-12T07:52:18+00:00",
-    "unit": "mg/dL",
-    "value": "2.6071"
-  },
-  "change_mg_dL": "-1",
-  "followup": {
-    "status": "found",
-    "time": "2015-06-05T06:44:05+00:00",
-    "unit": "mg/dL",
-    "value": "1.6355"
-  }
-}
-```
-
-**Retrieval work:** Observation → linked ambulatory Encounter → follow-up Observation search → difference. Stored support: 1 Encounter, 2 Observation.
-
-</details>
-
-<details>
-<summary><strong>Ordered products at inpatient and ambulatory encounters</strong> — <code>followup_medication_comparison</code> (complex)</summary>
-
-**Selection and meaning:** Choose the latest eligible inpatient stay with qualifying orders and a complete 30-, 60-, or 90-day window. Find the first qualifying ambulatory follow-up and compare product-code sets across the two encounters. If a follow-up exists, the inpatient set is nonempty by construction; otherwise return followup=null. These are encounter orders, not discharge prescriptions or reconciled medication use.
-
-**Question** — `followup_medication_comparison_14452e174389783b84e3` · training split
+**Ordered products at inpatient and ambulatory encounters**
 
 > For the most recent completed inpatient stay that contains at least one recorded non-draft,
 > non-error medication order and has a full 60-day window before the record cutoff, find the first
@@ -668,97 +264,12 @@ The example ID locates its full question, patient reference, and evidence list i
 > Compare encounter-linked orders; these are not discharge prescriptions or a reconciled list of
 > medications being taken, and missing orders do not establish discontinuation.
 
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "2023-09-05T19:18:50+00:00",
-  "discharged_at": "2023-09-08T20:28:09+00:00",
-  "followup": {
-    "days_after_discharge": "4",
-    "started_at": "2023-09-12T20:28:09+00:00"
-  },
-  "products": {
-    "both": [],
-    "only_first": [
-      {
-        "code": "1719286",
-        "name": "10 ML Furosemide 10 MG/ML Injection",
-        "system": "http://www.nlm.nih.gov/research/umls/rxnorm"
-      }
-    ],
-    "only_second": []
-  }
-}
-```
-
-**Retrieval work:** Inpatient Encounter/orders → conditional follow-up Encounter search → orders → set comparison. Stored support: 2 Encounter, 6 Medication, 6 MedicationRequest.
-
-</details>
-
-<details>
-<summary><strong>Subsequent admission and shared recorded conditions</strong> — <code>subsequent_admission</code> (complex)</summary>
-
-**Selection and meaning:** Start with the first recorded eligible completed inpatient stay. Find the next completed inpatient admission strictly after its discharge and before the cutoff. Return its admission time, elapsed days, linked conditions, and condition codes shared with the initial stay. This question has no fixed 30-day readmission window.
-
-**Question** — `subsequent_admission_f6a82c26597dd19abc2c` · training split
+**Subsequent admission and shared recorded conditions**
 
 > After the first recorded completed inpatient stay, identify the next completed inpatient admission
 > strictly after its discharge and before the record cutoff. If one exists, give its admission time,
 > the elapsed days rounded to one decimal, its linked conditions, and condition codes shared by the
 > two stays. Otherwise report no subsequent recorded admission.
-
-**Stored answer:**
-
-```json
-{
-  "admitted_at": "1973-02-20T01:53:54+00:00",
-  "discharged_at": "1973-03-18T02:08:54+00:00",
-  "subsequent_admission": {
-    "admitted_at": "2004-08-14T02:20:31+00:00",
-    "conditions": [
-      {
-        "condition": {
-          "code": "399211009",
-          "name": "History of myocardial infarction (situation)",
-          "system": "http://snomed.info/sct"
-        },
-        "onset": "2004-08-14T20:21:49+00:00"
-      }
-    ],
-    "days_after_discharge": "11472",
-    "shared_conditions": []
-  }
-}
-```
-
-**Retrieval work:** First inpatient Encounter → next eligible Encounter → both condition sets → intersection. Stored support: 1 Condition, 2 Encounter.
-
-</details>
-
-## A real negative example
-
-A missing follow-up is still answerable from the chart. This training example has
-an eligible inpatient anchor but no qualifying ambulatory follow-up in its stated
-window. The stored answer uses `null`, not an invented visit or a query-error label.
-
-Example: `discharge_followup_1fe9dd2ddbcf1a58f72e`
-
-> For the most recent completed inpatient stay with a full 90-day window before the record cutoff,
-> identify the first completed ambulatory encounter strictly after discharge and no later than 90 days
-> afterward. Give its time, elapsed days rounded to one decimal, and linked conditions; otherwise
-> report no matching follow-up.
-
-```json
-{
-  "admitted_at": "2026-02-05T01:21:08+00:00",
-  "discharged_at": "2026-02-06T01:21:08+00:00",
-  "followup": null
-}
-```
-
-The same patient could have unrelated encounters or follow-up outside this
-window. “No matching follow-up” is scoped to the question, not a claim about all care.
 
 ## Validation and agent use
 
@@ -773,7 +284,7 @@ python3 -m dataset.review --dataset data/processed/cohort-200 --bundles data/raw
 
 Local validation, raw-bundle replay, and clinical review passed for this cohort.
 Replay uses the same oracle; live FHIR verification and actual model execution
-remain separate checks. See the [current report](../docs/COHORT_200_REPORT.md).
+remain separate checks; current run status is described in the project README.
 
 The zero-shot pilot selects 56 training questions from 44 patients, four per family,
 including eight primary negatives. Agent episodes, scores, and token/tool metrics
