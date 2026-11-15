@@ -1,0 +1,234 @@
+{
+  "dataset_sha256": "0aad4dfc849db5c9e45084da62223d4c58a5d4c302f42aa9e84dbdbb9afffd6b",
+  "episode_ids": [
+    "209106a36951ad16d9390b92",
+    "0fe7582e377d5ece6ea64d10",
+    "01387db767bca68766f8e3f0",
+    "07fb38dccdf4473528160c02",
+    "1ba67afb9034a5d4bae5accd",
+    "b0c56e99108d27abd5a794cd",
+    "0d4c31a78dc45f5fa107f767",
+    "178337a4d5972e17df0d41b1",
+    "01213d95688ba78f3989b260",
+    "0009110e042aaa1630feb227",
+    "2c17e6df9ecdbc6eff390886",
+    "0060c0b12acc064d37d9a577",
+    "058d22c6d3c4dce507d6ea43",
+    "0661728784de8d3f316b1301",
+    "3c5346824a3df7b53d6bb1c8",
+    "14fae51577ab002afb04e23b",
+    "03175b4487212a8c787cfbd8",
+    "0e801cd96a974731568a5082",
+    "029d89c19098777b845b1269",
+    "1c36d56dd75ffea453c5294d",
+    "04d816a6fc06013407245a00",
+    "18eb3f0576470cb294031cd4",
+    "04235cf86111e88d04209576",
+    "00ed40c95dc56f0764afa9d9",
+    "170fcec5da8b417f9a840c06",
+    "0808b536073d8ab1f288d99f",
+    "0e897d11737324cf9a133ee8",
+    "0de657b84210f2e8f1735557"
+  ],
+  "selection_policy": "Two per family; one primary negative where available, otherwise two positives. Within each stratum prefer prior non-runtime-error attempts, then ascending opaque ID. No correctness-based selection. Interleave families across two rounds.",
+  "baseline": "outputs/teacher-batches/batch-002",
+  "baseline_model_identity": "Unpinned Codex default; user identifies Astra High, not independently established by logs.",
+  "questions": [
+    {
+      "episode_id": "209106a36951ad16d9390b92",
+      "family": "admission_medication_comparison",
+      "negative": true,
+      "complexity": "intermediate",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "0fe7582e377d5ece6ea64d10",
+      "family": "cbc_change",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "01387db767bca68766f8e3f0",
+      "family": "cbc_panel",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "07fb38dccdf4473528160c02",
+      "family": "discharge_followup",
+      "negative": true,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "1ba67afb9034a5d4bae5accd",
+      "family": "followup_medication_comparison",
+      "negative": true,
+      "complexity": "complex",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "b0c56e99108d27abd5a794cd",
+      "family": "glycemic_followup",
+      "negative": true,
+      "complexity": "complex",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "0d4c31a78dc45f5fa107f767",
+      "family": "inpatient_conditions",
+      "negative": true,
+      "complexity": "simple",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "178337a4d5972e17df0d41b1",
+      "family": "inpatient_medications",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "01213d95688ba78f3989b260",
+      "family": "medication_indications",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "0009110e042aaa1630feb227",
+      "family": "outpatient_bp",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "2c17e6df9ecdbc6eff390886",
+      "family": "preadmission_treated_conditions",
+      "negative": true,
+      "complexity": "intermediate",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "0060c0b12acc064d37d9a577",
+      "family": "procedure_indications",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "058d22c6d3c4dce507d6ea43",
+      "family": "renal_followup",
+      "negative": true,
+      "complexity": "complex",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "0661728784de8d3f316b1301",
+      "family": "subsequent_admission",
+      "negative": true,
+      "complexity": "complex",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "3c5346824a3df7b53d6bb1c8",
+      "family": "admission_medication_comparison",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "14fae51577ab002afb04e23b",
+      "family": "cbc_change",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "03175b4487212a8c787cfbd8",
+      "family": "cbc_panel",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "0e801cd96a974731568a5082",
+      "family": "discharge_followup",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "029d89c19098777b845b1269",
+      "family": "followup_medication_comparison",
+      "negative": false,
+      "complexity": "complex",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "1c36d56dd75ffea453c5294d",
+      "family": "glycemic_followup",
+      "negative": false,
+      "complexity": "complex",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "04d816a6fc06013407245a00",
+      "family": "inpatient_conditions",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "18eb3f0576470cb294031cd4",
+      "family": "inpatient_medications",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "04235cf86111e88d04209576",
+      "family": "medication_indications",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "00ed40c95dc56f0764afa9d9",
+      "family": "outpatient_bp",
+      "negative": false,
+      "complexity": "simple",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "170fcec5da8b417f9a840c06",
+      "family": "preadmission_treated_conditions",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": false
+    },
+    {
+      "episode_id": "0808b536073d8ab1f288d99f",
+      "family": "procedure_indications",
+      "negative": false,
+      "complexity": "intermediate",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "0e897d11737324cf9a133ee8",
+      "family": "renal_followup",
+      "negative": false,
+      "complexity": "complex",
+      "matched_baseline": true
+    },
+    {
+      "episode_id": "0de657b84210f2e8f1735557",
+      "family": "subsequent_admission",
+      "negative": false,
+      "complexity": "complex",
+      "matched_baseline": true
+    }
+  ]
+}

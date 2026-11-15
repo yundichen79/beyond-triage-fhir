@@ -8,26 +8,40 @@ import re
 import time
 
 from dataset.common import canonical
-from pilot.tools import PatientTools, TOOL_DEFINITIONS
+from pilot.tools import PatientTools, tools_for_answer
+from pilot.contract import answer_error, contract_for_question, json_schema
 
 
 MODEL_ID = "Qwen/Qwen3-8B"
 MODEL_REVISION = "b968826d9c46dd6066d109eabc6255188de91218"
 MODEL_CACHE = Path(__file__).resolve().parents[1] / "vendor/models"
 
-# This complete, value-free contract is the same for every question. It is not
-# derived from a question's family, oracle, answer, or supporting resource IDs.
+# Shared instructions plus one value-free schema selected from visible wording.
+# Evaluator labels, family metadata, or supporting IDs never select the schema.
 SYSTEM_PROMPT = """Answer one patient's clinical chart-review question using the FHIR tools.
 Use only records obtained through these tools. Patient scope is automatic. Search
 with useful dates, codes, encounter references, statuses and sorting. Follow a
 search's next_page cursor when the remaining matches are needed. An incomplete
 page or tool error cannot establish that a record does not exist. You may refine
 failed searches. Resource references are authoritative for report results and
-documented indications. Orders do not establish medication administration or use.
+documented indications. An empty filtered search may mean the filters are wrong;
+broaden it within the question's scope rather than repeatedly issuing the same
+request. Do not impose an unstated recent-history cutoff on a complete chart.
+Use Encounter.class IMP for inpatient and AMB for ambulatory. Search CBC
+DiagnosticReports and read their result references. Arrays in search params
+are repeated AND constraints; comma-separated strings express alternatives.
+Inspect reasonReference on retrieved orders/procedures instead of searching it.
+Return valid JSON: close every object and array before ending a tool_call block.
+Orders do not establish medication administration or use.
 Return UTC timestamps with timezone, coded concepts, stated units, and requested
 calculations. Do not invent values, indications, discontinuation, or causal effects.
+For a DiagnosticReport, report_time is effectiveDateTime (or effectivePeriod.start),
+not issued. Copy the recorded timestamp exactly; do not add issued's fractional seconds.
+For changes requested to one decimal, compute later minus earlier and round the
+change to one decimal using decimal half-even rounding. Do not round source measurements.
 Finish with the finish tool, alone in its turn, after reading its evidence. A final
-JSON object with keys answer and evidence is also accepted. Cite ResourceType/id
+JSON object with keys answer and evidence, or a bare JSON tool call with keys
+name and arguments, is also accepted. Cite ResourceType/id
 references actually returned by tools. Use the following public output contract;
 these are schemas, not worked examples or patient-specific hints.
 
@@ -48,38 +62,31 @@ Arrays are unordered, but retain separate orders when the question requests orde
 Missing calculated changes are null. Round only calculations that the question
 requests to one decimal; retain measurement precision.
 
-Answer objects by requested chart-review task:
-- Stay conditions: admitted_at, discharged_at, conditions: ConditionEntry[].
-- Stay orders: admitted_at, discharged_at, orders: Order[].
-- Preadmission prescribing history: admitted_at, discharged_at,
-  conditions_with_prior_orders: [{condition: Concept, onset: timestamp,
-  abatement: timestamp or null, orders: [{medication: Concept, ordered_at: timestamp}]}].
-  An empty documented history is an empty array.
-- Latest CBC: use the CBC structure directly.
-- CBC comparison: previous: CBC, latest: CBC, hemoglobin_change_g_dL: number or null,
-  platelet_change_10_3_uL: number or null. Changes are latest minus previous.
-- Ambulatory blood pressure: visit_started_at: timestamp, systolic: Measurement,
-  diastolic: Measurement.
-- Discharge follow-up: admitted_at, discharged_at, followup: null or
-  {started_at: timestamp, days_after_discharge: number, conditions: ConditionEntry[]}.
-- Products across two stays: admitted_at and discharged_at of the later stay,
-  previous_admitted_at of the earlier stay, products: Products.
-- Products at discharge follow-up: admitted_at, discharged_at, followup: null or
-  {started_at: timestamp, days_after_discharge: number}; include products: Products
-  only when a follow-up exists.
-- Procedure indications: encounter_started_at: timestamp,
-  procedures: [{procedure: Concept, performed_at: timestamp, indications: Concept[]}].
-- Prescribing indications: encounter_started_at: timestamp,
-  orders: [{medication: Concept, indications: Concept[]}].
-- Glycemic follow-up: condition: Concept, onset: timestamp, followup: Measurement.
-  Only when a follow-up record exists, also include baseline: Measurement and
-  change_percentage_points: number or null (follow-up minus baseline).
-- Renal laboratory follow-up: baseline: Measurement, followup: Measurement,
-  change_mg_dL: number or null (follow-up minus baseline).
-- Subsequent admission: admitted_at and discharged_at of the initial stay,
-  subsequent_admission: null or {admitted_at: timestamp, days_after_discharge: number,
-  conditions: ConditionEntry[], shared_conditions: Concept[]}.
-Include exactly the requested answer structure. Do not include a task label.
+The user message and finish tool contain ONE answer JSON Schema for this question.
+Follow its required fields and nesting exactly. Conditional alternatives describe
+records found versus absent, not different tasks. Do not include a task-name wrapper.
+This schema specifies the answer format; it supplies no patient values or evidence.
+
+Retrieval procedure:
+First identify the requested anchor and time window from the question. Search the
+complete history up to the stated cutoff; never supply a lower bound merely to
+make the search smaller. For earliest/latest selection, sort ascending/descending
+and use small pages. If the latest encounter lacks a required order or measurement,
+continue to older encounters until the latest QUALIFYING encounter is found.
+After selecting the anchor, derive the requested relative window from its dates.
+For a preceding-year question, search BEFORE admission, not during the stay.
+For alternative codes, classes, or encounters use a comma-separated string;
+an array means all constraints must hold simultaneously. If a search is empty,
+check these constraints and remove any assumptions not stated in the question.
+For indications, retain only orders/procedures with their OWN explicit
+reasonReference links. Do not copy one resource's indications onto other resources.
+Avoid unrelated record types and repeatedly retrieving the same pages. Use small
+pages and follow next_page only as required to establish the requested selection.
+Use calculate for requested numeric differences, with decimal_places=1 when the
+question asks for one decimal. Preserve the original measurement values.
+Before finish, check the anchor, time window, required links, and rounding. Cite
+retrieved anchor encounters/reports AND supporting measurements, orders, and
+conditions. A correct value alone does not document its encounter or report context.
 """
 
 
@@ -94,9 +101,10 @@ class Settings:
     top_p: float = 0.8
     top_k: int = 20
     seed: int = 4880
+    max_repeated_failures: int = 4
 
     def __post_init__(self):
-        for name in ("max_steps", "max_tool_calls", "max_context_tokens", "max_new_tokens", "max_output_tokens", "top_k"):
+        for name in ("max_steps", "max_tool_calls", "max_context_tokens", "max_new_tokens", "max_output_tokens", "top_k", "max_repeated_failures"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if not math.isfinite(self.temperature) or not 0 < self.temperature or not 0 < self.top_p <= 1:
@@ -194,9 +202,13 @@ def parse_calls(text):
         if text.startswith("```json") and text.endswith("```"):
             text = text[7:-3].strip()
         value = json_object(text)
-        if set(value) != {"answer", "evidence"}:
-            raise ValueError("Use tool_call blocks or a final JSON object containing answer and evidence")
-        calls = [{"name": "finish", "arguments": value}]
+        if set(value) == {"name", "arguments"}:
+            calls = [value]
+        elif set(value) == {"answer", "evidence"}:
+            calls = [{"name": "finish", "arguments": value}]
+        else:
+            raise ValueError("Use tool_call blocks, a JSON call with name and arguments, "
+                             "or a final JSON object containing answer and evidence")
     for call in calls:
         if set(call) != {"name", "arguments"} or not isinstance(call["name"], str) or not isinstance(call["arguments"], dict):
             raise ValueError("Each call needs a name and an arguments object")
@@ -207,12 +219,32 @@ def parse_calls(text):
 
 def run_agent(question, patient, model, client, settings, seed):
     """Only question and patient context enter the model; all scoring is external."""
+    contract_name, answer_shape = contract_for_question(question)
+    answer_schema = json_schema(answer_shape)
+    tool_definitions = tools_for_answer(answer_schema)
     tools = PatientTools(client, patient)
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Patient reference: {patient}\n\n{question}"}]
+                {"role": "user", "content": f"Patient reference: {patient}\n\n{question}"
+                 + "\n\nAnswer JSON Schema:\n" + canonical(answer_schema)}]
     started = time.monotonic()
-    totals = {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "protocol_errors": 0, "truncated_turns": 0}
+    totals = {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "protocol_errors": 0,
+              "truncated_turns": 0, "repeat_warnings": 0}
     status, error, final = "step_limit", None, None
+    failures = {}
+
+    def repeated_failure(key):
+        count = failures.get(key, 0) + 1
+        failures[key] = count
+        stop = count >= settings.max_repeated_failures
+        warning = None
+        if count == settings.max_repeated_failures - 1:
+            warning = (f"The identical failed action or empty search occurred {count} times "
+                       "without retrieving new resources. Correct the format or change the search "
+                       "within the question's scope. The next identical failure ends the episode; "
+                       "do not invent an answer to avoid the limit.")
+            totals["repeat_warnings"] += 1
+        return warning, stop
+
     model.seed(seed)
     for _ in range(settings.max_steps):
         remaining = settings.max_output_tokens - totals["output_tokens"]
@@ -221,7 +253,7 @@ def run_agent(question, patient, model, client, settings, seed):
             break
         totals["llm_calls"] += 1
         try:
-            generation = model.generate(messages, TOOL_DEFINITIONS,
+            generation = model.generate(messages, tool_definitions,
                                         max_new_tokens=min(settings.max_new_tokens, remaining))
         except ContextLimit as exc:
             status, error = "context_limit", str(exc)
@@ -238,9 +270,14 @@ def run_agent(question, patient, model, client, settings, seed):
             calls = parse_calls(generation.text)
         except (ValueError, TypeError) as exc:
             totals["protocol_errors"] += 1
+            warning, stop = repeated_failure(("parse", generation.text.strip()))
             messages.extend([{"role": "assistant", "content": generation.text},
                 {"role": "user", "content": "Output format error: " + str(exc)
-                 + ". Use the tool signatures and public answer contract; do not guess missing evidence."}])
+                 + ". Use the tool signatures and public answer contract; do not guess missing evidence."
+                 + (" " + warning if warning else "")}])
+            if stop:
+                status, error = "repeated_failure", "Identical malformed output repeated without new resources"
+                break
             if totals["output_tokens"] >= settings.max_output_tokens:
                 status = "output_token_limit"
                 break
@@ -249,6 +286,7 @@ def run_agent(question, patient, model, client, settings, seed):
                          "tool_calls": [{"type": "function", "function": call} for call in calls]})
         for call in calls:
             name, arguments = call["name"], call["arguments"]
+            before_seen = len(tools.seen)
             if name == "finish":
                 evidence = arguments.get("evidence")
                 if (set(arguments) != {"answer", "evidence"} or not isinstance(arguments["answer"], dict)
@@ -256,18 +294,33 @@ def run_agent(question, patient, model, client, settings, seed):
                     result = {"error": "finish requires an answer object and an evidence array of references"}
                 elif set(evidence) - tools.seen:
                     result = {"error": "Citations must refer to resources actually returned by tools"}
+                elif (schema_error := answer_error(arguments["answer"], answer_shape)):
+                    result = {"error": schema_error}
                 else:
                     final = {"answer": arguments["answer"], "evidence": sorted(set(evidence))}
                     status = "completed"
                     break
                 totals["protocol_errors"] += 1
             elif tools.calls >= settings.max_tool_calls:
-                status, error = "tool_call_limit", "The episode exhausted its FHIR tool-call budget"
+                status, error = "tool_call_limit", "The episode exhausted its tool-call budget"
                 break
             else:
                 result = tools.execute(name, arguments)
+            if len(tools.seen) > before_seen:
+                failures.clear()
+            failed = "error" in result
+            empty_search = (name == "search_fhir" and result.get("complete") is True
+                            and result.get("resources") == [] and result.get("total") == 0)
+            stop = False
+            if failed or empty_search:
+                warning, stop = repeated_failure(("call", canonical(call)))
+                if warning:
+                    result["retry_warning"] = warning
             messages.append({"role": "tool", "name": name, "content": canonical(result)})
-        if final is not None or status == "tool_call_limit":
+            if stop:
+                status, error = "repeated_failure", "Identical failed action or empty search repeated without new resources"
+                break
+        if final is not None or status in {"tool_call_limit", "repeated_failure"}:
             break
         if totals["output_tokens"] >= settings.max_output_tokens:
             status = "output_token_limit"
@@ -276,5 +329,6 @@ def run_agent(question, patient, model, client, settings, seed):
                   incomplete_searches=sum(not s["complete"] for s in tools.searches),
                   elapsed_seconds=round(time.monotonic() - started, 3))
     # The shared system prompt and tools are stored once in the run header.
-    return {"status": status, "error": error, "final": final, "retrieved_resource_ids": sorted(tools.seen),
+    return {"status": status, "error": error, "final": final, "answer_contract": contract_name,
+            "retrieved_resource_ids": sorted(tools.seen),
             "metrics": totals, "messages": messages[1:]}

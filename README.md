@@ -14,9 +14,9 @@ See the [question catalog](data/README.md) for dataset rules, fields, and exampl
 | Component | Status |
 | --- | --- |
 | Dataset | Built; local validation, source replay, and clinical review passed |
-| Live FHIR verification | Pending rerun after empty patient-search results; a configuration workaround and early search probe are implemented |
-| Zero-shot pilot | Implemented; model preparation and actual GPU execution pending |
-| SFT and comparative evaluation | Planned; no real-model results collected yet |
+| Live FHIR verification | Passed for 200 patients / 1,202 questions; v4 query smoke checks passed 18/18 |
+| Zero-shot pilot | V4 training diagnostic: 3/14 correct, 2/14 correct with required evidence; v5 implemented, model evaluation pending |
+| SFT and comparative evaluation | Planned; fixed-workflow comparison, SFT, and held-out evaluation outstanding |
 
 ## Data source and dataset
 
@@ -93,9 +93,59 @@ including eight missing-record cases. Validation and test data are reserved;
 this pilot checks agent behavior rather than estimating held-out performance.
 
 Qwen3-8B uses native tool calling with thinking disabled. Inputs contain the question,
-patient reference, shared instructions, and answer schema. Tools provide patient-scoped
+patient reference, shared instructions, and a question-specific public answer schema. Tools provide patient-scoped
 search, reference reads, pagination, and answer submission. Ground truth stays outside
 the model.
+
+Interface version 2 adds explicit FHIR query syntax and corrective parameter
+errors. Submitted answers must match a public task structure before an episode
+can finish; every episode uses the same validator without evaluator labels.
+This checks formatting, not clinical correctness or search completeness. New run
+headers record the interface version and validator checksum; preserve older
+results and use a distinct `--output` path when comparing versions.
+
+Interface version 3 also accepts a valid bare JSON tool call with `name` and
+`arguments`, removes nearest-task guesses from schema feedback, and clarifies
+report effective times and requested rounding. An identical failed action or
+empty search triggers a warning on its third occurrence and ends the episode
+with `repeated_failure` on its fourth occurrence without new retrieved resources.
+Retrieving a new resource resets these counters. Valid nonempty repeated reads
+do not trigger this guard. These are interface changes; answer scoring is unchanged.
+
+Interface version 4 selects one public answer structure using only the visible
+question wording, places its JSON Schema in the user message and `finish` tool,
+and validates submissions against that structure. Unknown question wording fails
+before GPU loading rather than falling back to any of the fourteen task shapes.
+No family labels, ground truth, evidence IDs, or oracle metadata select the schema.
+Headers store each selected contract and the policy for reconstructing its tool definition.
+
+Search validation now rejects wrong-resource status values, contradictory repeated
+status constraints, sort fields outside the supported resource-specific subset,
+and encounter references not yet observed in tool results. Invalid queries produce
+errors, not empty successful searches. Legitimate queries with no matches still
+return empty results; these alone do not justify chart-wide absence claims.
+The offline fixture transport now applies supported code, date, status, class,
+reference and sort filters, and rejects unsupported fixture behavior instead of
+silently ignoring it. This transport is not a replacement for live HAPI testing.
+
+V4 passed 18 live query smoke checks and its 14-question training diagnostic
+completed with 3 correct answers and 2 correct with required evidence. These are
+development results, not held-out evaluation.
+
+Interface version 5 adds a decimal `calculate` tool for later-minus-earlier
+differences with explicit half-even rounding. It takes only agent-supplied numeric
+strings, makes no HTTP requests, and counts against the same total tool budget.
+Tool-call totals now include computation as well as retrieval; report this change
+when comparing with older interfaces. It does not automatically alter final answers.
+Contradictory AND filters on single-valued encounter/class fields now return
+actionable errors rather than successful empty searches; OR remains explicit.
+Shared instructions emphasize full-history temporal anchors, qualifying encounters,
+targeted retrieval, explicit indication links, rounding, and anchor citations.
+No ground-truth labels or resource IDs are exposed, and scoring is unchanged.
+
+V5 is covered by offline regression tests only; its effect on model accuracy is
+unmeasured. Use a fresh output path for evaluation and provide the same interface
+to comparison systems. V4 artifacts remain historical evidence of v4 behavior.
 
 ```bash
 python3 -m pilot.run plan        # Preview selection without a model download

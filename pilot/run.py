@@ -16,6 +16,7 @@ from dataset.questions import FAMILIES, negative
 from pilot.agent import MODEL_CACHE, MODEL_ID, MODEL_REVISION, SYSTEM_PROMPT, Settings, TransformersModel, run_agent
 from pilot.scoring import score_episode
 from pilot.tools import TOOL_DEFINITIONS
+from pilot.contract import INTERFACE_VERSION, contract_for_question, json_schema
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +68,8 @@ def summarize(records):
                 "input_tokens": sum(r["metrics"]["input_tokens"] for r in group),
                 "output_tokens": sum(r["metrics"]["output_tokens"] for r in group),
                 "tool_errors": sum(r["metrics"]["tool_errors"] for r in group),
-                "protocol_errors": sum(r["metrics"]["protocol_errors"] for r in group)}
+                "protocol_errors": sum(r["metrics"]["protocol_errors"] for r in group),
+                "repeat_warnings": sum(r["metrics"].get("repeat_warnings", 0) for r in group)}
     return {"overall": aggregate(records),
             "by_family": {key: aggregate([r for r in records if r["family"] == key]) for key in sorted({r["family"] for r in records})},
             "by_complexity": {key: aggregate([r for r in records if r["complexity"] == key]) for key in sorted({r["complexity"] for r in records})},
@@ -78,15 +80,22 @@ def summarize(records):
 def execute_pilot(rows, client, model, settings, output, dataset, replace=False, source_id=None):
     if not rows or any(row["split"] != "train" for row in rows):
         raise ValueError("The initial pilot uses training questions only")
+    contracts = {}
+    for row in rows:
+        name, shape = contract_for_question(row["question"])
+        contracts[row["id"]] = {"name": name, "schema": json_schema(shape)}
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     header = {"type": "run", "started_at": datetime.now(timezone.utc).isoformat(),
-              "mode": "zero-shot", "model": model.metadata, "settings": asdict(settings),
+              "mode": "zero-shot", "interface_version": INTERFACE_VERSION,
+              "model": model.metadata, "settings": asdict(settings),
               "selection": selection_summary(rows), "question_ids": [r["id"] for r in rows],
               "dataset_sha256": file_digest(Path(dataset) / "questions.jsonl"), "source_id": source_id,
               "fhir_base_url": client.base, "system_prompt": SYSTEM_PROMPT, "tools": TOOL_DEFINITIONS,
+              "public_answer_contracts": contracts,
+              "tool_schema_policy": "finish.answer is replaced with the selected public answer schema",
               "code_sha256": {str(p.relative_to(ROOT)): file_digest(p) for p in
-                  [ROOT / "pilot" / name for name in ("agent.py", "tools.py", "run.py", "scoring.py")]
+                  [ROOT / "pilot" / name for name in ("agent.py", "tools.py", "contract.py", "run.py", "scoring.py")]
                   + [ROOT / "dataset/fhir.py"]}}
     light_records = []
     client.strict_search = True
@@ -152,6 +161,8 @@ def main():
                 print(json.dumps(summarize(r for r in records if r.get("type") == "example"), indent=2))
             return
         rows = select_questions(read_questions(args.dataset / "questions.jsonl"), args.per_family, args.seed)
+        for row in rows:
+            contract_for_question(row["question"])  # Fail before GPU loading or server setup.
         print(json.dumps(selection_summary(rows), indent=2), flush=True)
         if args.action == "plan":
             return
