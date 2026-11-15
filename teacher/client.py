@@ -1,4 +1,9 @@
-"""Public, standard-library-only client; has no access to backend code or labels."""
+"""Public, standard-library-only client; has no access to backend code or labels.
+
+`status` and `respond` print a compact view: the turn ID, budget counters and only
+the tool results added since the previous turn. The first turn also carries the
+shared rules and tool definitions, once. `--full` prints the complete turn.
+"""
 
 import argparse
 import json
@@ -7,15 +12,37 @@ from pathlib import Path
 import sys
 import time
 
+# Backend states in which the next turn is still being prepared.
+PENDING = ('processing', 'starting_backend')
+SEEN = 'client_seen.json'
+DEFAULT_WAIT = 300
+
 
 def show(session):
-    state = json.loads((session / 'state.json').read_text())
+    """Return the raw pending turn, or the session state when no turn is pending."""
+    try:
+        state = json.loads((session / 'state.json').read_text())
+    except FileNotFoundError:
+        return {'status': 'starting_backend'}
     if state['status'] == 'awaiting_response':
         return json.loads((session / 'turn.json').read_text())
     return state
 
 
-def respond(session, text, wait=30):
+def wait_for_turn(session, previous=None, wait=DEFAULT_WAIT):
+    """Block until a turn other than `previous` is pending or the episode ends."""
+    deadline = time.monotonic() + wait
+    while True:
+        result = show(session)
+        if result.get('status') not in PENDING and (
+                previous is None or result.get('turn_id') != previous):
+            return result
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.2)
+
+
+def respond(session, text, wait=DEFAULT_WAIT):
     state = json.loads((session / 'state.json').read_text())
     if state['status'] != 'awaiting_response':
         raise ValueError('Session is not awaiting a response; run status')
@@ -30,14 +57,72 @@ def respond(session, text, wait=30):
         handle.write(response)
         handle.flush()
         os.fsync(handle.fileno())
-    deadline = time.monotonic() + wait
-    while time.monotonic() < deadline:
-        result = show(session)
-        if result.get('status') != 'processing' and result.get('turn_id') != turn['turn_id']:
-            return result
-        time.sleep(0.2)
+    result = wait_for_turn(session, turn['turn_id'], wait)
+    if result is not None:
+        return result
     return {'status': 'submitted', 'turn_id': turn['turn_id'],
-            'next': 'Run status to retrieve the result; do not submit again.'}
+            'next': 'Run status to wait for the result; do not submit again.'}
+
+
+def compact_tools(tools):
+    """Tool definitions without the answer schema, which the question already shows."""
+    compact = []
+    for tool in tools:
+        function = dict(tool['function'])
+        if function['name'] == 'finish':
+            parameters = json.loads(json.dumps(function['parameters']))
+            if 'answer' in parameters.get('properties', {}):
+                parameters['properties']['answer'] = {
+                    'type': 'object', 'description': 'Must match the Answer JSON Schema in the question'}
+            function['parameters'] = parameters
+        compact.append(function)
+    return compact
+
+
+def compact(turn):
+    """Delta view of a pending turn; other states pass through unchanged."""
+    if turn.get('status') != 'awaiting_response' or 'new_messages' not in turn:
+        return turn
+    view = {key: turn[key] for key in ('turn_id', 'status', 'turn', 'max_turns',
+            'student_context_tokens', 'student_context_available') if key in turn}
+    new = []
+    for message in turn['new_messages']:
+        if message['role'] == 'system':
+            view['rules'] = message['content']
+            view['tools'] = compact_tools(turn['tools'])
+        elif message['role'] == 'tool':
+            try:
+                result = json.loads(message['content'])
+            except (TypeError, ValueError):
+                result = message['content']
+            new.append({'tool': message.get('name'), 'result': result})
+        elif message['role'] == 'user':
+            new.append({'user': message['content']})
+    view['new'] = new
+    return view
+
+
+def already_seen(session, turn_id):
+    try:
+        return json.loads((session / SEEN).read_text()).get('turn_id') == turn_id
+    except (OSError, ValueError):
+        return False
+
+
+def mark_seen(session, turn_id):
+    (session / SEEN).write_text(json.dumps({'turn_id': turn_id}) + '\n')
+
+
+def render(session, result, full=False, repeat=False):
+    if result.get('status') != 'awaiting_response':
+        return result
+    turn_id = result['turn_id']
+    if not (full or repeat) and already_seen(session, turn_id):
+        return {'turn_id': turn_id, 'status': 'awaiting_response',
+                'note': 'This turn was already shown. Submit your response to it with respond; '
+                        'use status --repeat only if its contents were lost.'}
+    mark_seen(session, turn_id)
+    return result if full else compact(result)
 
 
 def main():
@@ -45,11 +130,19 @@ def main():
     parser.add_argument('action', choices=('status', 'respond'))
     parser.add_argument('--session', type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument('--text', help='Raw assistant tool-call JSON; otherwise read stdin')
+    parser.add_argument('--full', action='store_true', help='Print the complete turn, including history')
+    parser.add_argument('--repeat', action='store_true', help='Show a turn again in compact form')
+    parser.add_argument('--wait', type=int, default=DEFAULT_WAIT,
+                        help='Seconds to wait for the backend before returning')
     args = parser.parse_args()
     try:
-        result = show(args.session) if args.action == 'status' else respond(
-            args.session, args.text if args.text is not None else sys.stdin.read())
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        if args.action == 'status':
+            result = wait_for_turn(args.session, wait=args.wait) or show(args.session)
+        else:
+            result = respond(args.session, args.text if args.text is not None else sys.stdin.read(),
+                             wait=args.wait)
+        print(json.dumps(render(args.session, result, args.full, args.repeat),
+                         ensure_ascii=False, separators=(',', ':')))
     except (OSError, ValueError, KeyError) as exc:
         parser.exit(1, f'Client error: {exc}\n')
 

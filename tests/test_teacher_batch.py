@@ -11,7 +11,8 @@ from unittest.mock import patch
 from dataset.common import Snapshot, digest
 from dataset.oracle import evaluate
 from pilot.agent import Settings
-from teacher.batch import (attempt, codex_command, codex_environment, require_chatgpt_login,
+from teacher.batch import (attempt, claude_command, claude_environment, codex_command,
+                           codex_environment, require_chatgpt_login, require_claude_login,
                            select_rows, selected_manifest_rows)
 from teacher.client import respond, show
 from teacher.prepare import opaque_id
@@ -44,6 +45,9 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(command[command.index('--model') + 1], 'gpt-6.1-sol')
         self.assertIn('model_reasoning_effort="high"', command)
         self.assertIn('--ignore-user-config', command)
+        # Instructions travel in the launch prompt; no startup file reads are requested.
+        self.assertIn('# Teacher instructions', command[-1])
+        self.assertNotIn('Read AGENTS.md', command[-1])
 
     def test_selection_excludes_heldout_and_completed_prior_attempts(self):
         rows = [row('a'), row('b'), row('c', 'validation'), row('d', 'test')]
@@ -104,14 +108,55 @@ class BatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'requires existing ChatGPT'):
                 require_chatgpt_login('/codex')
 
+    def test_claude_command_uses_subscription_cli_with_only_the_public_client(self):
+        command = claude_command('/runtime/bin/claude', 'claude-sonnet-5-5', 'high')
+        self.assertEqual(command[1:3], ['-p', command[2]])
+        self.assertEqual(command[command.index('--model') + 1], 'claude-sonnet-5-5')
+        self.assertEqual(command[command.index('--effort') + 1], 'high')
+        self.assertIn('# Teacher instructions', command[command.index('--system-prompt') + 1])
+        self.assertEqual(command[command.index('--tools') + 1], 'Bash')
+        self.assertEqual(command[command.index('--allowedTools') + 1], 'Bash(python3 teacher_client.py *)')
+        self.assertEqual(command[command.index('--permission-mode') + 1], 'dontAsk')
+        for flag in ('--safe-mode', '--strict-mcp-config', '--no-session-persistence'):
+            self.assertIn(flag, command)
+        with self.assertRaises(ValueError):
+            claude_command('/runtime/bin/claude', None, None)
+
+    def test_claude_environment_and_login_refuse_paid_api_modes(self):
+        with patch.dict('os.environ', {'ANTHROPIC_API_KEY': 'sentinel', 'CLAUDE_CODE_USE_BEDROCK': '1'}):
+            environment = claude_environment()
+        self.assertNotIn('ANTHROPIC_API_KEY', environment)
+        self.assertNotIn('CLAUDE_CODE_USE_BEDROCK', environment)
+        self.assertEqual(environment['BASH_DEFAULT_TIMEOUT_MS'], '360000')
+        with patch('teacher.batch.subprocess.run') as run:
+            run.return_value.returncode = 0
+            run.return_value.stderr = ''
+            run.return_value.stdout = json.dumps({'loggedIn': True, 'authMethod': 'claude.ai',
+                                                  'apiProvider': 'firstParty'})
+            require_claude_login('/claude')
+            for status in ({'loggedIn': True, 'authMethod': 'api_key', 'apiProvider': 'firstParty'},
+                           {'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'bedrock'},
+                           {'loggedIn': False}):
+                run.return_value.stdout = json.dumps(status)
+                with self.subTest(status=status), self.assertRaisesRegex(ValueError, 'subscription'):
+                    require_claude_login('/claude')
+
     def test_complete_attempt_records_tools_but_keeps_scores_private(self):
+        self.run_complete_attempt('codex', 'gpt-6.1-sol')
+
+    def test_complete_claude_attempt_records_teacher_cli(self):
+        self.run_complete_attempt('claude', 'claude-sonnet-5-5')
+
+    def run_complete_attempt(self, teacher, model_id):
         sample = row()
         failures = []
+        drivers = []
 
         class FakeDriver:
-            def __init__(self, command, output, timeout):
-                self.session = Path(command[command.index('--cd') + 1])
+            def __init__(self, command, output, timeout, cwd, teacher='codex'):
+                self.session = Path(cwd)
                 self.thread = None
+                drivers.append((command, teacher))
 
             def start(self):
                 if self.thread:
@@ -155,22 +200,26 @@ class BatchTests(unittest.TestCase):
             base = Path(directory)
             with patch('teacher.batch.CodexDriver', FakeDriver):
                 result = attempt(sample, fake_client(), TinyTokenizer(), Settings(),
-                    base / 'public', base / 'private', '/runtime/bin/codex', 5,
-                    'gpt-6.1-sol', 'high')
+                    base / 'public', base / 'private', f'/runtime/bin/{teacher}', 5,
+                    model_id, 'high', teacher)
+            self.assertEqual(drivers[0][1], teacher)
+            self.assertIn(model_id, drivers[0][0])
             self.assertFalse(failures)
             self.assertEqual(result['status'], 'completed')
             self.assertTrue(result['scores']['answer_correct_with_evidence'])
             public = json.loads((base / 'public/state.json').read_text())
             self.assertNotIn('scores', public)
             self.assertFalse((base / 'public/evaluation.json').exists())
+            self.assertFalse((base / 'public/AGENTS.md').exists())
             evaluation = json.loads((base / 'private/evaluation.json').read_text())
             self.assertFalse(evaluation['approved_for_sft'])
             trace = json.loads((base / 'private/trajectory.json').read_text())
             self.assertEqual(trace['metrics']['http_requests'], 3)
             provenance = json.loads((base / 'private/provenance.json').read_text())
-            self.assertEqual(provenance['requested_teacher_model'], 'gpt-6.1-sol')
+            self.assertEqual(provenance['requested_teacher_model'], model_id)
             self.assertEqual(provenance['requested_reasoning_effort'], 'high')
-            self.assertEqual(trace['model']['requested_teacher_model'], 'gpt-6.1-sol')
+            self.assertEqual(provenance['teacher_cli'], teacher)
+            self.assertEqual(trace['model']['requested_teacher_model'], model_id)
 
 
 if __name__ == '__main__':

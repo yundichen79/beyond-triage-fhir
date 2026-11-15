@@ -8,9 +8,9 @@ import threading
 import time
 import unittest
 
-from pilot.agent import Settings, run_agent
+from pilot.agent import SYSTEM_PROMPT, Settings, run_agent
 from teacher.bridge import FileTeacher, atomic_json
-from teacher.client import respond, show
+from teacher.client import render, respond, show, wait_for_turn
 from teacher.prepare import public_episode
 from test_pilot import CBC_QUESTION, fake_client
 
@@ -88,6 +88,46 @@ class TeacherTests(unittest.TestCase):
                 journal = [json.loads(line) for line in (session / 'raw.jsonl').read_text().splitlines()]
                 self.assertEqual([r['type'] for r in journal], ['request', 'response', 'request', 'response'])
                 self.assertEqual(json.loads(journal[2]['messages'][-1]['content'])['value'], '1.2')
+
+    def test_compact_turns_show_static_context_once_and_only_new_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            settings = Settings(max_steps=2)
+            with (session / 'raw.jsonl').open('w') as log:
+                model = FileTeacher(session, TinyTokenizer(), settings, log, timeout=5)
+                thread = threading.Thread(target=run_agent, args=(
+                    CBC_QUESTION, 'Patient/p1', model, fake_client(), settings, 1))
+                thread.start()
+                first = render(session, wait_for_turn(session, wait=5))
+                self.assertEqual(first['turn'], 1)
+                self.assertEqual(first['rules'], SYSTEM_PROMPT)
+                self.assertNotIn('messages', first)
+                finish = next(t for t in first['tools'] if t['name'] == 'finish')
+                self.assertNotIn('properties', finish['parameters']['properties']['answer'])
+                self.assertEqual(len(first['new']), 1)
+                self.assertIn('Answer JSON Schema', first['new'][0]['user'])
+                # A second status for the same turn does not reprint it.
+                again = render(session, show(session))
+                self.assertEqual(set(again), {'turn_id', 'status', 'note'})
+                self.assertIn('rules', render(session, show(session), repeat=True))
+                self.assertEqual(len(render(session, show(session), full=True)['messages']), 2)
+                # respond blocks and returns the next turn directly.
+                second = render(session, respond(session, json.dumps({'name': 'calculate', 'arguments': {
+                    'earlier': '1', 'later': '2.25', 'decimal_places': 1}}), wait=5))
+                self.assertEqual(second['turn'], 2)
+                self.assertNotIn('rules', second)
+                self.assertNotIn('tools', second)
+                self.assertEqual(len(second['new']), 1)
+                self.assertEqual(second['new'][0]['tool'], 'calculate')
+                self.assertEqual(second['new'][0]['result']['value'], '1.2')
+                respond(session, json.dumps({'name': 'read_fhir', 'arguments': {
+                    'reference': 'Observation/not-seen'}}), wait=0)
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+                # The launcher writes the terminal state; the client passes it through.
+                final = {'status': 'step_limit', 'final': None, 'note': 'Episode ended.'}
+                atomic_json(session / 'state.json', final)
+                self.assertEqual(render(session, wait_for_turn(session, wait=1)), final)
 
     def test_context_budget_blocks_before_teacher_input(self):
         with tempfile.TemporaryDirectory() as directory:

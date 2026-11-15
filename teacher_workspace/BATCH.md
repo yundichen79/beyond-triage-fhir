@@ -103,3 +103,35 @@ inference. Automatic Codex execution on a compute node must be verified during
 the first approved batch; the earlier pilot used interactive Codex.
 
 This document and operator logs must not be supplied to the individual teacher.
+
+## Claude Code teacher (subscription, no API key)
+
+`--teacher claude` runs each question in a fresh `claude -p` process instead of
+`codex exec`. It requires an existing claude.ai subscription login (`claude auth
+status` must report `authMethod: claude.ai`, first-party). The runner removes
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, base-URL and Bedrock/Vertex/Foundry
+overrides, so a run cannot silently switch to per-token billing. A model and effort
+are required; nothing falls back to the CLI default.
+
+How the session is set up:
+- `TEACHER.md` replaces Claude Code's default system prompt (`--system-prompt`).
+- Bash is the only tool, and only `python3 teacher_client.py ...` is allowed.
+  Everything else is denied without prompting (`--permission-mode dontAsk`).
+- `--safe-mode` drops the operator's CLAUDE.md, plugins, hooks, skills and MCP
+  servers. `--no-session-persistence` saves nothing.
+
+This is permission-based isolation, not the OS-level filesystem sandbox that the
+Codex profile uses. Events go to `attempts/<id>/claude-events.jsonl`.
+
+```sh
+sbatch --parsable scripts/run_teacher_batch.sbatch \
+  --teacher claude --teacher-model claude-sonnet-5-5 --reasoning-effort high \
+  --selection teacher_workspace/selections/sol61-high-28-v1.json \
+  --sessions teacher_workspace/batches/sonnet55-high-28-v1 \
+  --output outputs/teacher-batches/sonnet55-high-28-v1
+python3 -m teacher.report --output outputs/teacher-batches/sonnet55-high-28-v1 \
+  --baseline outputs/teacher-batches/sol61-high-28-v1
+```
+
+Claude Code and Codex count cached tokens differently, and their subscription
+allowances differ, so compare token totals with care.

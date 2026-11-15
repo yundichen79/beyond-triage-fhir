@@ -25,6 +25,9 @@ class FileTeacher:
         self.timeout = timeout
         self.on_request = on_request
         self.check_alive = check_alive
+        # Messages already delivered to the teacher; each turn exposes only newer ones.
+        self.delivered = 0
+        self.turns = 0
         self.metadata = {
             'model': 'interactive-codex-teacher',
             'actual_model_identity': 'Record in operator run notes; not observable by the bridge',
@@ -52,10 +55,18 @@ class FileTeacher:
             'max_response_tokens': budget}) + '\n')
         self.raw_log.flush()
         os.fsync(self.raw_log.fileno())
+        self.turns += 1
+        # The teacher's own assistant messages are not echoed back to it.
+        new_messages = [m for m in messages[self.delivered:] if m.get('role') != 'assistant']
+        self.delivered = len(messages)
         atomic_json(self.session / 'turn.json', {
             'status': 'awaiting_response', 'turn_id': turn_id,
+            'turn': self.turns, 'max_turns': self.settings.max_steps,
+            'new_messages': new_messages,
             'messages': messages, 'tools': tools,
             'student_input_tokens': count, 'max_response_tokens': budget,
+            'student_context_tokens': count,
+            'student_context_available': self.settings.max_context_tokens - budget,
             'token_accounting': self.metadata['token_accounting'],
         })
         atomic_json(self.session / 'state.json', {'status': 'awaiting_response', 'turn_id': turn_id})

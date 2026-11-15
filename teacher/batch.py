@@ -1,4 +1,8 @@
-"""Plan or generate training trajectories, with one fresh Codex process per question."""
+"""Plan or generate training trajectories, with one fresh teacher process per question.
+
+The teacher is a subscription CLI (`codex exec` or Claude Code `claude -p`), never a
+per-token API: API-key environment overrides are removed and the login mode is checked.
+"""
 
 import argparse
 from dataclasses import asdict
@@ -18,13 +22,29 @@ from pilot.scoring import score_episode
 from teacher.bridge import FileTeacher, atomic_json
 from teacher.prepare import ROOT, opaque_id, public_episode
 
-PROMPT = (
-    'Read AGENTS.md and episode.json in this directory. You are authorized to run '
-    'teacher_client.py status and respond to solve this one question using its tools. '
-    'Continue until the recorded episode ends, then stop. Do not inspect files outside '
-    'this directory or any other conversation. Do not start another Codex process. '
-    'The operator handles the next question in a separate fresh context.'
+PROMPT_HEADER = (
+    'You are authorized to run teacher_client.py status and respond in this directory '
+    'to solve one question using its tools. Start with `python3 teacher_client.py status`; '
+    'do not read any file first. Continue until the recorded episode ends, then stop. '
+    'Do not inspect files outside this directory or any other conversation. Do not start '
+    'another agent process. The operator handles the next question in a separate fresh '
+    'context.'
 )
+TEACHERS = ('codex', 'claude')
+CODEX_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
+CLAUDE_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+# The client may wait up to 300 s for the backend; give the shell tool more than that.
+CLAUDE_BASH_TIMEOUT_MS = '360000'
+
+
+def teacher_instructions():
+    return (ROOT / 'teacher_workspace/TEACHER.md').read_text()
+
+
+def teacher_prompt():
+    # The instructions travel in the launch prompt, so the session holds no
+    # AGENTS.md: that would be loaded and read a second time.
+    return PROMPT_HEADER + ' Your full instructions follow.\n\n' + teacher_instructions()
 
 
 def codex_environment():
@@ -34,6 +54,22 @@ def codex_environment():
     return environment
 
 
+def claude_environment():
+    # Any of these would route Claude Code to per-token API or cloud billing.
+    environment = dict(os.environ)
+    for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+                'ANTHROPIC_PROFILE', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX',
+                'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN'):
+        environment.pop(key, None)
+    environment.update(BASH_DEFAULT_TIMEOUT_MS=CLAUDE_BASH_TIMEOUT_MS,
+                       BASH_MAX_TIMEOUT_MS=CLAUDE_BASH_TIMEOUT_MS)
+    return environment
+
+
+def teacher_environment(teacher):
+    return claude_environment() if teacher == 'claude' else codex_environment()
+
+
 def require_chatgpt_login(executable):
     result = subprocess.run([str(executable), 'login', 'status'], capture_output=True,
                             text=True, env=codex_environment(), timeout=30)
@@ -41,6 +77,24 @@ def require_chatgpt_login(executable):
     if result.returncode or 'logged in using chatgpt' not in message:
         # Do not echo login status: API-key modes may include a credential fragment.
         raise ValueError('Batch generation requires existing ChatGPT sign-in; API-key mode is not authorized')
+
+
+def require_claude_login(executable):
+    result = subprocess.run([str(executable), 'auth', 'status'], capture_output=True,
+                            text=True, env=claude_environment(), timeout=30)
+    try:
+        status = json.loads(result.stdout)
+    except ValueError:
+        status = {}
+    # Do not echo the status: it contains account details.
+    if (result.returncode or status.get('loggedIn') is not True
+            or status.get('authMethod') != 'claude.ai' or status.get('apiProvider') != 'firstParty'):
+        raise ValueError('Batch generation requires an existing claude.ai subscription login; '
+                         'API-key and cloud-provider modes are not authorized')
+
+
+def require_login(teacher, executable):
+    (require_claude_login if teacher == 'claude' else require_chatgpt_login)(executable)
 
 
 def select_rows(rows, previous=(), limit=None):
@@ -104,23 +158,50 @@ def codex_command(executable, session, teacher_model=None, reasoning_effort=None
         command += ['--model', teacher_model]
     if reasoning_effort:
         command += ['-c', 'model_reasoning_effort=' + json.dumps(reasoning_effort)]
-    return command + [PROMPT]
+    return command + [teacher_prompt()]
+
+
+def claude_command(executable, teacher_model, reasoning_effort):
+    # Our instructions replace Claude Code's default system prompt, and Bash is the
+    # only tool, restricted to the public client. --safe-mode drops the operator's
+    # CLAUDE.md, plugins, hooks, skills and MCP servers; nothing is persisted.
+    # This is permission-based isolation, not an OS sandbox like the Codex profile.
+    if not teacher_model or not reasoning_effort:
+        raise ValueError('Claude teacher runs require an explicit model and effort')
+    return [str(Path(executable).resolve()), '-p', PROMPT_HEADER,
+            '--model', teacher_model, '--effort', reasoning_effort,
+            '--system-prompt', teacher_instructions(),
+            '--tools', 'Bash',
+            '--allowedTools', 'Bash(python3 teacher_client.py *)',
+            '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+            '--safe-mode', '--strict-mcp-config', '--disable-slash-commands',
+            '--no-session-persistence', '--output-format', 'stream-json', '--verbose']
+
+
+def teacher_command(teacher, executable, session, teacher_model=None, reasoning_effort=None):
+    if teacher == 'claude':
+        return claude_command(executable, teacher_model, reasoning_effort)
+    return codex_command(executable, session, teacher_model, reasoning_effort)
 
 
 class CodexDriver:
-    def __init__(self, command, output, timeout):
+    """Run one teacher CLI process for one question (Codex or Claude Code)."""
+
+    def __init__(self, command, output, timeout, cwd, teacher='codex'):
         self.command, self.output, self.timeout = command, output, timeout
+        self.cwd, self.teacher = cwd, teacher
         self.process, self.started, self.handles = None, None, []
 
     def start(self):
         if self.process is not None:
             self.check()
             return
-        self.handles = [(self.output / name).open('x') for name in ('codex-events.jsonl', 'codex-stderr.log')]
+        self.handles = [(self.output / f'{self.teacher}-{name}').open('x')
+                        for name in ('events.jsonl', 'stderr.log')]
         self.started = time.monotonic()
         self.process = subprocess.Popen(self.command, stdin=subprocess.DEVNULL,
             stdout=self.handles[0], stderr=self.handles[1], start_new_session=True,
-            cwd=self.command[self.command.index('--cd') + 1], env=codex_environment())
+            cwd=str(self.cwd), env=teacher_environment(self.teacher))
 
     def check(self):
         if self.process is None:
@@ -153,29 +234,32 @@ class CodexDriver:
 
 
 def attempt(row, client, tokenizer, settings, session, output, executable, timeout,
-            teacher_model=None, reasoning_effort=None):
+            teacher_model=None, reasoning_effort=None, teacher='codex'):
     packet = public_episode(row)
     session.mkdir(parents=True, exist_ok=False)
     output.mkdir(parents=True, exist_ok=False, mode=0o700)
     atomic_json(session / 'episode.json', packet)
     shutil.copyfile(ROOT / 'teacher/client.py', session / 'teacher_client.py')
-    shutil.copyfile(ROOT / 'teacher_workspace/TEACHER.md', session / 'AGENTS.md')
-    command = codex_command(executable, session, teacher_model, reasoning_effort)
+    command = teacher_command(teacher, executable, session, teacher_model, reasoning_effort)
     atomic_json(output / 'provenance.json', {
         'episode_id': opaque_id(row), 'dataset_id': row['id'], 'row_sha256': digest(row),
         'settings': asdict(settings), 'command': command, 'fresh_context': True,
+        'teacher_cli': teacher,
         'teacher_model_selection': 'Explicit CLI override' if teacher_model else 'Codex executable default; no model override',
         'requested_teacher_model': teacher_model, 'requested_reasoning_effort': reasoning_effort,
-        'authentication': 'Existing ChatGPT login required; API-key environment overrides removed',
+        'authentication': ('Existing claude.ai subscription login required; API-key and cloud-provider '
+                           'environment overrides removed') if teacher == 'claude' else
+                          'Existing ChatGPT login required; API-key environment overrides removed',
         'student_transcript_tokenizer': {'model': MODEL_ID, 'revision': MODEL_REVISION},
-        'actual_codex_usage_source': 'codex-events.jsonl when provided by the CLI',
+        'actual_teacher_usage_source': f'{teacher}-events.jsonl when provided by the CLI',
     })
-    driver = CodexDriver(command, output, timeout)
+    driver = CodexDriver(command, output, timeout, session, teacher)
     try:
         with (output / 'raw-turns.jsonl').open('x') as log:
             model = FileTeacher(session, tokenizer, settings, log, timeout,
                                 on_request=driver.start, check_alive=driver.check)
-            model.metadata['model'] = 'fresh-codex-exec-teacher'
+            model.metadata['model'] = ('fresh-claude-code-teacher' if teacher == 'claude'
+                                       else 'fresh-codex-exec-teacher')
             model.metadata['requested_teacher_model'] = teacher_model
             model.metadata['requested_reasoning_effort'] = reasoning_effort
             episode = run_agent(row['question'], row['patient_id'], model, client, settings, settings.seed)
@@ -202,16 +286,24 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--resume-from', type=Path, action='append', default=[])
     parser.add_argument('--selection', type=Path, help='Frozen training episode selection manifest')
-    parser.add_argument('--teacher-model', help='Explicit Codex model ID; pair with --reasoning-effort')
-    parser.add_argument('--reasoning-effort', choices=('low', 'medium', 'high', 'xhigh', 'max', 'ultra'))
+    parser.add_argument('--teacher', choices=TEACHERS, default='codex',
+                        help='Subscription CLI that runs the teacher')
+    parser.add_argument('--teacher-model', help='Explicit model ID; pair with --reasoning-effort')
+    parser.add_argument('--reasoning-effort', choices=CODEX_EFFORTS)
     parser.add_argument('--limit', type=int, help='Optional cap; default is every remaining training question')
     parser.add_argument('--episode-timeout', type=int, default=900)
     parser.add_argument('--max-run-seconds', type=int, default=12600,
                         help='Soft run budget including backend setup; stop between episodes')
     parser.add_argument('--codex', default=shutil.which('codex'))
+    parser.add_argument('--claude', default=shutil.which('claude'))
     args = parser.parse_args()
     if bool(args.teacher_model) != bool(args.reasoning_effort):
         parser.error('--teacher-model and --reasoning-effort must be supplied together')
+    if args.teacher == 'claude' and not args.teacher_model:
+        parser.error('--teacher claude requires an explicit --teacher-model and --reasoning-effort')
+    if args.teacher == 'claude' and args.reasoning_effort not in CLAUDE_EFFORTS:
+        parser.error(f'Claude effort must be one of {", ".join(CLAUDE_EFFORTS)}')
+    executable = args.claude if args.teacher == 'claude' else args.codex
     if args.selection and (args.resume_from or args.limit):
         parser.error('--selection cannot be combined with --resume-from or --limit')
     if args.limit is not None and args.limit <= 0 or args.episode_timeout <= 0 or args.max_run_seconds <= 0:
@@ -229,18 +321,19 @@ def main():
                 else select_rows(rows, args.resume_from, args.limit))
     print(json.dumps({'training_questions': sum(r['split'] == 'train' for r in rows),
         'selected_questions': len(selected), 'selected_patients': len({r['patient_id'] for r in selected}),
-        'fresh_context_per_question': True, 'requested_teacher_model': args.teacher_model,
+        'fresh_context_per_question': True, 'teacher_cli': args.teacher,
+        'requested_teacher_model': args.teacher_model,
         'requested_reasoning_effort': args.reasoning_effort}, indent=2), flush=True)
     if args.action == 'plan' or not selected:
         return
-    if not args.sessions or not args.output or not args.codex:
-        parser.error('run requires --sessions, --output, and an installed codex executable')
+    if not args.sessions or not args.output or not executable:
+        parser.error(f'run requires --sessions, --output, and an installed {args.teacher} executable')
     sessions, output = args.sessions.resolve(), args.output.resolve()
     if sessions == output or sessions in output.parents or output in sessions.parents:
         parser.error('Public sessions and private outputs must be separate trees')
     if sessions.exists() or output.exists():
         parser.error('Use new output/session paths; use --resume-from to skip previously recorded attempts')
-    require_chatgpt_login(args.codex)
+    require_login(args.teacher, executable)
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION,
         cache_dir=str(MODEL_CACHE), local_files_only=True, trust_remote_code=False)
@@ -253,11 +346,13 @@ def main():
     atomic_json(output / 'batch.json', {'dataset_sha256': dataset_hash,
         'episode_ids': [opaque_id(r) for r in selected], 'resume_from': [str(p) for p in args.resume_from],
         'settings': asdict(settings), 'episode_timeout': args.episode_timeout,
+        'teacher_cli': args.teacher,
         'requested_teacher_model': args.teacher_model, 'requested_reasoning_effort': args.reasoning_effort,
         'selection': selection,
         'max_run_seconds': args.max_run_seconds,
         'code_sha256': {str(p.relative_to(ROOT)): file_digest(p) for p in
             [ROOT / name for name in ('teacher/batch.py', 'teacher/bridge.py', 'teacher/client.py',
+                                     'teacher_workspace/TEACHER.md',
                                      'pilot/agent.py', 'pilot/tools.py', 'pilot/contract.py')]}})
 
     def after_verify(client, selected_rows, snapshot):
@@ -270,8 +365,8 @@ def main():
                 eid = opaque_id(row)
                 print(f'Teacher question {summary["attempted"] + 1}/{len(selected_rows)}: {eid}', flush=True)
                 result = attempt(row, client, tokenizer, settings, sessions / eid,
-                    output / 'attempts' / eid, args.codex, args.episode_timeout,
-                    args.teacher_model, args.reasoning_effort)
+                    output / 'attempts' / eid, executable, args.episode_timeout,
+                    args.teacher_model, args.reasoning_effort, args.teacher)
                 results.write(json.dumps(result) + '\n')
                 results.flush()
                 os.fsync(results.fileno())

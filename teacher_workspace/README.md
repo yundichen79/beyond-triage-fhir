@@ -48,9 +48,15 @@ Once the job creates the session and its state becomes `awaiting_response`, open
 fresh Codex conversation **in that session directory**, with no inherited history.
 Give it this request:
 
-> Read AGENTS.md and episode.json in this directory. Solve this one question using
-> only teacher_client.py to call the provided tools. Record a genuine trajectory
-> and stop when the episode ends. Do not inspect any files outside this directory.
+> Follow AGENTS.md in this directory. Solve this one question using only
+> teacher_client.py, starting with `python3 teacher_client.py status`. Record a
+> genuine trajectory and stop when the episode ends. Do not inspect any files
+> outside this directory.
+
+The client prints compact turns: the first `status` shows the shared rules, tool
+definitions and question once; each `respond` waits for the backend and shows only
+the new tool results. The teacher does not need to read `episode.json`. Batch runs
+pass `TEACHER.md` as the launch prompt and do not copy it into the session.
 
 Configure actual filesystem permissions to deny access to the parent repository,
 other sessions, labels, logs, and private outputs. A new working directory or an
