@@ -25,8 +25,8 @@ the [teacher guide](teacher/README.md) for trajectory generation.
 | 3. Student environment | `student/` | Used live in every teacher episode |
 | 4. Teacher trajectories | `teacher/` | Done for now: Claude Sonnet 5.5 (high effort), 306 grounded trajectories for 318 of 899 training questions |
 | 5. SFT data | `sft/data.py` | Done: clean (1,179 examples) and recovery (1,171) variants |
-| 6. SFT training | `sft/train.py` | Ready: LoRA script, launcher and dry runs pass; GPU smoke test queued |
-| 7. Baselines and evaluation | `student/run.py` | Runner handles validation/test and LoRA adapters; zero-shot on validation and test running |
+| 6. SFT training | `sft/train.py` | GPU smoke test passed (peak 26.7 GB on an A40); clean and recovery runs submitted |
+| 7. Baselines and evaluation | `student/run.py` | Zero-shot Qwen3-8B done: 11.7% grounded on validation, 9.5% on test. Fixed-workflow baseline and SFT evaluation outstanding |
 
 The [next steps](#next-steps) section lists what remains.
 
@@ -134,6 +134,41 @@ python3 -m student.run summarize --output outputs/zero-shot-v6-test.jsonl
 - **Output:** results go to the `--output` file (default `outputs/zero-shot.jsonl`),
   and logs to `logs/student-<job-id>.log`.
 `sbatch scripts/verify_student_queries.sbatch` reruns the live query checks.
+
+## Zero-shot baseline
+
+Qwen3-8B without fine-tuning, on every validation and test question (one sampled run,
+temperature 0.7, seed 4880, on an A40):
+
+| | Validation (145) | Test (158) |
+| --- | ---: | ---: |
+| Correct | 17 (11.7%) | 17 (10.8%) |
+| Grounded (correct with all required evidence) | 17 (11.7%) | 15 (9.5%) |
+| Submitted an answer | 45 | 45 |
+| Ran out of context | 45 | 54 |
+| Stopped for repeating a failed action | 45 | 54 |
+| Hit the step limit | 10 | 5 |
+| Mean tool calls per question | 8.7 | 7.8 |
+
+- **By difficulty (grounded):** simple 14/59 and 12/66; intermediate 2/68 and 1/74;
+  complex 1/18 and 2/18 (validation and test).
+- **Missing-record cases:** 3/12 and 3/6 grounded.
+- **By family:** nearly all successes are CBC panel questions (13/22 and 11/27).
+  Outpatient blood pressure, medication indications and procedure indications score
+  zero on both splits.
+
+Main failure causes:
+- **Invalid searches repeated until the episode stops.** Most often an `encounter`
+  filter that is not an encounter ID, such as a class code (26 validation and 29 test
+  episodes). Then arguments outside `params` (7 / 9), and malformed tool-call JSON.
+  Three validation and eight test episodes never made a valid tool call.
+- **Running out of context** after a median of only 6 tool calls: broad searches,
+  without narrowing filters, fill the 16K-token budget.
+
+On the same interface the teacher solved about 96% of its training questions. The
+baseline's most common error, an invalid `encounter` filter, is the error the teacher
+corrected 31 times in the recovery data. Results are in
+`outputs/zero-shot-v6-{validation,test}.jsonl`.
 
 ## Teacher trajectories
 
@@ -247,6 +282,11 @@ Each run writes, to a new folder under `outputs/sft-runs/`:
 - `train-log.jsonl`: training and dev losses
 - `epoch-<n>/`: one adapter per epoch
 
+The smoke test (`--smoke`, 2 steps on the 16 longest examples) passed on an A40. Peak
+GPU memory was 26.7 GB of 48 GB, training and dev loss decreased, and the adapter
+saved. Each step of 8 longest examples took about 5.6 minutes, so a full 2-epoch run is
+estimated at 6–9 hours on an A40.
+
 `--dry-run` checks the data and tokenization without a GPU. It passed on both
 variants: every prompt and completion tokenizes the same apart as joined, and the
 longest example is 14,269 tokens. `--smoke` runs 2 steps on the longest examples.
@@ -267,16 +307,10 @@ tier).
 
 ## Next steps
 
-1. **Check the SFT setup on a GPU.** Run the smoke test (queued): 2 optimizer steps on
-   the 16 longest examples. It confirms peak GPU memory, speed and adapter saving.
-   ```bash
-   sbatch scripts/train_sft.sbatch --smoke \
-     --data outputs/sft-data/sonnet55-v6-20261116-recovery --output outputs/sft-runs/smoke-recovery
-   ```
-2. **Spot-check the SFT data** while training runs. Read a few selected trajectories
+1. **Spot-check the SFT data** while training runs. Read a few selected trajectories
    per family for invented filters, wrong anchors and unsupported missing-record
    claims. Grounding is checked automatically; search quality is not.
-3. **Train both variants** with the default settings: 2 epochs, learning rate 1e-4,
+2. **Train both variants (running)** with the default settings: 2 epochs, learning rate 1e-4,
    LoRA rank 16, 16 examples per step. That's one model on the clean data and one on
    the recovery data, giving the clean-versus-recovery ablation:
    ```bash
@@ -285,25 +319,23 @@ tier).
    sbatch scripts/train_sft.sbatch --data outputs/sft-data/sonnet55-v6-20261116 \
      --output outputs/sft-runs/clean-r16-lr1e-4
    ```
-4. **Choose settings on the validation split.** Run each epoch's adapter on all 145
+3. **Choose settings on the validation split.** Run each epoch's adapter on all 145
    validation questions and pick the variant and epoch by grounded accuracy. Try
    another learning rate or epoch count only if validation suggests it.
    ```bash
    sbatch scripts/run_student.sbatch --split validation \
      --adapter outputs/sft-runs/recovery-r16-lr1e-4/epoch-2 --output outputs/sft-recovery-e2-validation.jsonl
    ```
-5. **Zero-shot baseline** (running). Qwen3-8B without an adapter, on the full
-   validation and test splits, writing to `outputs/zero-shot-v6-{validation,test}.jsonl`.
-6. **Fixed-workflow baseline.** Port the TRIAGE-FHIR workflow onto the same environment,
+4. **Fixed-workflow baseline.** Port the TRIAGE-FHIR workflow onto the same environment,
    tools and budgets.
-7. **Final test evaluation.** Freeze the chosen SFT settings, then run all three
+5. **Final test evaluation.** Freeze the chosen SFT settings, then run all three
    systems on the 158 test questions. Compare:
    - accuracy, grounded accuracy and per-family (macro) accuracy
    - tool calls and tokens, and effort by difficulty
    - with patient-level bootstrap confidence intervals
 
    Each system is one sampled run (temperature 0.7, seed 4880); say so in the report.
-8. **Report.** State the limitations:
+6. **Report.** State the limitations:
    - synthetic data
    - a partial corpus (318 of 899 training questions)
    - the `followup_medication_comparison` issues
