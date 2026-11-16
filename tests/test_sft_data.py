@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from sft.data import clean, dev_patient, examples
+from sft.data import clean, dev_patient, examples, failed_turns
 
 
 def call(name, **arguments):
@@ -71,6 +71,20 @@ class SftDataTests(unittest.TestCase):
         self.assertNotIn('Output format error', rows[1]['prompt'])
         with self.assertRaisesRegex(ValueError, 'context budget'):
             examples(record, 'SYSTEM', [], TemplateTokenizer(), 10)
+
+    def test_recovery_mode_keeps_failures_in_context_but_never_trains_on_them(self):
+        self.assertEqual(failed_turns(MESSAGES), {1, 3, 6})
+        record = {'episode_id': 'e', 'patient_id': 'Patient/p1', 'family': 'f', 'complexity': 'simple',
+                  'messages': MESSAGES}
+        rows, removed = examples(record, 'SYSTEM', [], TemplateTokenizer(), 10_000, mode='recovery')
+        self.assertEqual(dict(removed), {'untrained_failed_turns': 3})
+        self.assertEqual(len(rows), 1)
+        final = rows[0]
+        self.assertIn('Encounter/e1', final['completion'])
+        for failure in ('Output format error', 'params.encounter must contain', 'Citations must refer'):
+            self.assertIn(failure, final['prompt'])
+        with self.assertRaisesRegex(ValueError, 'Unknown mode'):
+            examples(record, 'SYSTEM', [], TemplateTokenizer(), 10_000, mode='other')
 
     def test_trajectory_must_end_with_finish(self):
         record = {'episode_id': 'e', 'patient_id': 'Patient/p1', 'family': 'f', 'complexity': 'simple',

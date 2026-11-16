@@ -18,7 +18,7 @@ See the [question catalog](data/README.md) for dataset rules, fields, and exampl
 | Student interface | Version 6; used live in every teacher episode, live query check not yet rerun |
 | Zero-shot Qwen3-8B | Training diagnostics on v4/v5: 3/14 correct; not yet run on v6 |
 | Teacher trajectories | Claude Sonnet 5.5 (high effort): 306 grounded trajectories for 318 of 899 training questions; review pending |
-| SFT data | 1,179 per-turn examples from the 306 grounded trajectories (1,098 train / 81 dev) |
+| SFT data | Two variants from all 306 grounded trajectories: clean (1,179 examples) and recovery (1,171) |
 | SFT training and evaluation | Planned: LoRA training, fixed-workflow comparison and held-out evaluation outstanding |
 
 ## Data source and dataset
@@ -192,10 +192,15 @@ python3 -m sft.data --corpus outputs/teacher-corpus/sonnet55-v6-20261116 \
   --output outputs/sft-data/sonnet55-v6-20261116
 ```
 
-- **Cleaning:** failed actions retrieve nothing, so they are removed before
-  conversion: malformed turns with their format-error feedback, and failed tool calls
-  with their error results. Every remaining action and result is real. 110 of the
-  306 trajectories needed cleaning (57 malformed turns, 89 failed calls).
+- **Failed actions:** 110 of the 306 trajectories contain a failed action the teacher
+  recovered from (57 malformed turns, 89 failed tool calls). No trajectory is dropped
+  in either mode, and the model is never trained on a failed action.
+  - `--mode clean` (default) removes failed actions and their error feedback before
+    conversion. Every remaining action and result is real; the model sees only clean
+    demonstrations.
+  - `--mode recovery` keeps the conversation exactly as recorded. Failed turns stay in
+    later prompts, and the corrected turns that follow are trained in that context,
+    which teaches recovery from errors.
 - **Format:** one example per assistant turn. `prompt` is the exact text the student
   sees before that turn: the pinned Qwen3-8B chat template with
   `add_generation_prompt=True` and `enable_thinking=False`. `completion` is the turn in
@@ -204,15 +209,22 @@ python3 -m sft.data --corpus outputs/teacher-corpus/sonnet55-v6-20261116 \
 - **Checks:**
   - Each prompt must be a prefix of the rendered conversation through that turn.
   - Prompts must fit the 14,336-token student budget; the longest is 13,784.
-  - For all 196 trajectories that needed no cleaning, prompt token counts are
-    identical to those recorded at inference.
+  - Prompt token counts match those recorded at inference: all 1,171 recovery
+    prompts, and the 196 clean-mode trajectories that needed no cleaning.
   - Every completion parses with the student's tool-call parser.
 - **Split:** about 10% of patients are a dev set for training loss: 1,098 train / 81
   dev examples from 120 / 9 patients. The dataset's validation split stays reserved
   for choosing settings by agent runs.
 
-Output: `train.jsonl`, `dev.jsonl` and `sft-data.json` (provenance, cleaning counts and
-token totals). The training set is 5.2M prompt tokens and 174K completion tokens.
+| Variant | Folder under `outputs/sft-data/` | Train / dev examples | Recovery examples |
+| --- | --- | ---: | ---: |
+| Clean | `sonnet55-v6-20261116` | 1,098 / 81 | 0 |
+| Recovery | `sonnet55-v6-20261116-recovery` | 1,091 / 80 | 221 |
+
+Each folder holds `train.jsonl`, `dev.jsonl` and `sft-data.json` (provenance, mode,
+removal counts and token totals). Each training set is about 5.2M prompt tokens and
+173K completion tokens. Recovery examples are those whose prompt contains an earlier
+failure. Training on each variant gives a clean-versus-recovery ablation.
 
 ## Scoring
 
