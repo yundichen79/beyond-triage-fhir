@@ -11,7 +11,7 @@ from unittest.mock import patch
 from dataset.common import Snapshot, digest
 from dataset.oracle import evaluate
 from pilot.agent import Settings
-from teacher.batch import (attempt, claude_command, claude_environment, codex_command,
+from teacher.batch import (CodexDriver, MAX_LIMIT_RETRIES, abandoned_episode, RESET_MARGIN_SECONDS, attempt, limit_wait, usage_limit, claude_command, claude_environment, codex_command,
                            codex_environment, require_chatgpt_login, require_claude_login,
                            select_rows, selected_manifest_rows)
 from teacher.client import respond, show
@@ -140,6 +140,73 @@ class BatchTests(unittest.TestCase):
                 run.return_value.stdout = json.dumps(status)
                 with self.subTest(status=status), self.assertRaisesRegex(ValueError, 'subscription'):
                     require_claude_login('/claude')
+
+    def test_usage_limit_is_read_from_claude_rate_limit_events(self):
+        def event(status, kind, windows):
+            return {'type': 'rate_limit_event', 'rate_limit_info': {'status': status, 'resetsAt': 1794798600,
+                    'rateLimitType': kind, 'unifiedWindows': windows}}
+        five_hour = event('rejected', 'five_hour', {
+            'five_hour': {'utilization': 1, 'status': 'rejected', 'resetsAt': 1794798600},
+            'seven_day': {'utilization': 0.1, 'status': 'allowed', 'resetsAt': 1795302000}})
+        weekly = event('rejected', 'five_hour', {
+            'five_hour': {'status': 'rejected'}, 'seven_day': {'status': 'rejected'}})
+        warning = event('allowed_warning', 'five_hour', {})
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self.assertIsNone(usage_limit(base))
+            for events, expected in (([warning], None), ([warning, five_hour], ('five_hour', 1794798600)),
+                                     ([weekly], ('other', 1794798600))):
+                (base / 'claude-events.jsonl').write_text('\n'.join(json.dumps(e) for e in events) + '\nnot json')
+                with self.subTest(expected=expected):
+                    self.assertEqual(usage_limit(base), expected)
+
+    def test_abandoned_episode_is_distinguished_from_auth_permission_and_limit_failures(self):
+        rejected = {'type': 'rate_limit_event', 'rate_limit_info': {'status': 'rejected', 'resetsAt': 1,
+                    'rateLimitType': 'five_hour', 'unifiedWindows': {}}}
+        cases = (
+            ([{'type': 'result', 'is_error': False, 'permission_denials': []}], True),
+            ([{'type': 'result', 'is_error': False, 'permission_denials': [{'tool_name': 'Bash'}]}], False),
+            ([{'type': 'result', 'is_error': True, 'permission_denials': []}], False),
+            ([rejected, {'type': 'result', 'is_error': True}], False),
+            ([{'type': 'assistant', 'message': {'content': []}}], False))
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            self.assertFalse(abandoned_episode(base))
+            for events, expected in cases:
+                (base / 'claude-events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+                with self.subTest(events=events):
+                    self.assertEqual(abandoned_episode(base), expected)
+
+    def test_only_a_five_hour_limit_within_budget_is_waited_out(self):
+        now, reset = 1000.0, 1000.0 + 3600
+        wait, stop = limit_wait(('five_hour', reset), 600, now, 50000, 900, 0)
+        self.assertEqual((wait, stop), (3600 + RESET_MARGIN_SECONDS, None))
+        self.assertEqual(limit_wait(('five_hour', now - 5), 0, now, 50000, 900, 0)[0], RESET_MARGIN_SECONDS)
+        for limit, elapsed, retries, reason in (
+                (None, 0, 0, 'teacher_runtime_error'),
+                (('other', reset), 0, 0, 'usage_limit_longer_window'),
+                (('five_hour', None), 0, 0, 'usage_limit_unknown_reset'),
+                (('five_hour', reset), 0, MAX_LIMIT_RETRIES, 'usage_limit_repeated'),
+                (('five_hour', reset), 46000, 0, 'usage_limit_beyond_run_budget')):
+            with self.subTest(reason=reason):
+                self.assertEqual(limit_wait(limit, elapsed, now, 50000, 900, retries), (None, reason))
+
+    def test_driver_lets_the_teacher_exit_before_killing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            for name, script, grace, killed in (('slow-exit', 'sleep 1; echo summary', 10, False),
+                                                ('hung', 'sleep 30', 0.5, True)):
+                output = base / name
+                output.mkdir()
+                driver = CodexDriver(['bash', '-c', script], output, 60, base, 'claude', grace=grace)
+                driver.start()
+                started = time.monotonic()
+                driver.close()
+                with self.subTest(name=name):
+                    self.assertEqual(driver.process.returncode < 0, killed)
+                    self.assertLess(time.monotonic() - started, 9)
+                    if not killed:
+                        self.assertIn('summary', (output / 'claude-events.jsonl').read_text())
 
     def test_complete_attempt_records_tools_but_keeps_scores_private(self):
         self.run_complete_attempt('codex', 'gpt-6.1-sol')

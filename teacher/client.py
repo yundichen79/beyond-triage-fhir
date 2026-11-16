@@ -42,6 +42,19 @@ def wait_for_turn(session, previous=None, wait=DEFAULT_WAIT):
         time.sleep(0.2)
 
 
+def action_text(payload):
+    """A JSON array of calls becomes consecutive <tool_call> blocks, the student format
+    for several calls in one turn; anything else is submitted unchanged."""
+    try:
+        value = json.loads(payload)
+    except ValueError:
+        return payload
+    if isinstance(value, list) and value and all(isinstance(call, dict) for call in value):
+        return '\n'.join('<tool_call>' + json.dumps(call, ensure_ascii=False) + '</tool_call>'
+                         for call in value)
+    return payload
+
+
 def respond(session, text, wait=DEFAULT_WAIT):
     state = json.loads((session / 'state.json').read_text())
     if state['status'] != 'awaiting_response':
@@ -129,6 +142,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('status', 'respond'))
     parser.add_argument('--session', type=Path, default=Path(__file__).resolve().parent)
+    parser.add_argument('payload', nargs='?',
+                        help="respond: one call as JSON, or a JSON array of calls, in single quotes")
     parser.add_argument('--text', help='Raw assistant tool-call JSON; otherwise read stdin')
     parser.add_argument('--full', action='store_true', help='Print the complete turn, including history')
     parser.add_argument('--repeat', action='store_true', help='Show a turn again in compact form')
@@ -139,7 +154,10 @@ def main():
         if args.action == 'status':
             result = wait_for_turn(args.session, wait=args.wait) or show(args.session)
         else:
-            result = respond(args.session, args.text if args.text is not None else sys.stdin.read(),
+            if args.payload is not None and args.text is not None:
+                raise ValueError('Give the action once, as the argument or with --text')
+            text = args.payload if args.payload is not None else args.text
+            result = respond(args.session, action_text(text if text is not None else sys.stdin.read()),
                              wait=args.wait)
         print(json.dumps(render(args.session, result, args.full, args.repeat),
                          ensure_ascii=False, separators=(',', ':')))

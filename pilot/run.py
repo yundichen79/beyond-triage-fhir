@@ -93,7 +93,7 @@ def execute_pilot(rows, client, model, settings, output, dataset, replace=False,
               "dataset_sha256": file_digest(Path(dataset) / "questions.jsonl"), "source_id": source_id,
               "fhir_base_url": client.base, "system_prompt": SYSTEM_PROMPT, "tools": TOOL_DEFINITIONS,
               "public_answer_contracts": contracts,
-              "tool_schema_policy": "finish.answer is replaced with the selected public answer schema",
+              "tool_schema_policy": "Identical tools for every question; the selected answer schema appears once, in the user message",
               "code_sha256": {str(p.relative_to(ROOT)): file_digest(p) for p in
                   [ROOT / "pilot" / name for name in ("agent.py", "tools.py", "contract.py", "run.py", "scoring.py")]
                   + [ROOT / "dataset/fhir.py"]}}

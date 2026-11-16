@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from dataset.common import file_digest, read_questions, resource_id, timestamp, write_json
 from dataset.live import interrupt_cleanup, now, run_job
 from pilot.contract import INTERFACE_VERSION
-from pilot.tools import PatientTools
+from pilot.tools import MAX_COUNT, PatientTools
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +28,7 @@ def select_patient_rows(rows):
     return groups[min(eligible)]
 
 
-def collect(tools, kind, params, count=50):
+def collect(tools, kind, params, count=MAX_COUNT):
     result = tools.execute("search_fhir", {"resource_type": kind, "params": params, "count": count})
     resources = []
     pages = 0
@@ -74,7 +74,7 @@ def check_queries(client, rows, snapshot, output):
     def save():
         write_json(output / "query-smoke.json", report)
 
-    def query(name, kind, params, expected, sort=None, count=50):
+    def query(name, kind, params, expected, sort=None, count=MAX_COUNT):
         check = {"name": name, "kind": kind, "params": params, "count": count, "passed": False}
         report["checks"].append(check)
         save()

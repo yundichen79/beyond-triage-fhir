@@ -19,7 +19,7 @@ from dataset.questions import build_questions, negative
 from pilot.agent import ContextLimit, Generation, Settings, SYSTEM_PROMPT, parse_calls, run_agent
 from pilot.run import execute_pilot, select_questions, selection_summary, summarize
 from pilot.scoring import equal, score_episode
-from pilot.tools import FIELDS, PatientTools, TOOL_DEFINITIONS, projection, tools_for_answer
+from pilot.tools import FIELDS, MAX_COUNT, PatientTools, TOOL_DEFINITIONS, projection, tool_definitions
 from pilot.contract import answer_error, INTERFACE_VERSION, contract_for_question, json_schema
 from test_dataset import fixture, config, observation
 from fhir_fixture import search as fixture_search
@@ -258,13 +258,53 @@ class ToolTests(unittest.TestCase):
     def test_clinical_projections_preserve_all_fixture_answers_and_evidence(self):
         resources = fixture()
         rows, _, _, _ = build_questions(Snapshot(resources), config())
-        projected = Snapshot([projection(r) for r in resources if r["resourceType"] in FIELDS])
+
+        def rehydrate(original, projected):
+            # v6 omits subject (patient scope is automatic) and shortens status concepts to
+            # their code. Restore exactly that information, then re-derive every answer.
+            projected = dict(projected)
+            if "subject" in original:
+                projected["subject"] = original["subject"]
+            for key in ("clinicalStatus", "verificationStatus"):
+                if isinstance(projected.get(key), str):
+                    projected[key] = {"coding": [{"code": projected[key]}]}
+            return projected
+
+        projected = Snapshot([rehydrate(r, projection(r)) for r in resources if r["resourceType"] in FIELDS])
         self.assertEqual(len({r["family"] for r in rows}), 14)
         for row in rows:
             with self.subTest(family=row["family"]):
                 answer, evidence = evaluate(projected, row["patient_id"], row["oracle_spec"])
                 self.assertEqual(answer, row["ground_truth_answer"])
                 self.assertEqual(sorted(evidence), row["ground_truth_resource_ids"])
+
+    def test_v6_projection_is_slimmer_but_keeps_ids_references_and_names(self):
+        condition = {"resourceType": "Condition", "id": "c1", "subject": {"reference": "Patient/p1"},
+            "encounter": {"reference": "Encounter/e1"}, "meta": {"versionId": "1"},
+            "clinicalStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": "active"}]},
+            "verificationStatus": {"coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-ver-status", "code": "confirmed"}]},
+            "code": {"coding": [{"system": "http://snomed.info/sct", "code": "44054006", "display": "Diabetes"}], "text": "Diabetes"},
+            "onsetDateTime": "2020-01-01T00:00:00+00:00"}
+        projected = projection(condition)
+        self.assertEqual(projected, {"resourceType": "Condition", "id": "c1", "encounter": {"reference": "Encounter/e1"},
+            "clinicalStatus": "active", "verificationStatus": "confirmed",
+            "code": {"coding": [{"system": "http://snomed.info/sct", "code": "44054006", "display": "Diabetes"}]},
+            "onsetDateTime": "2020-01-01T00:00:00+00:00"})
+        # Text that differs from every display is information, so it stays.
+        differing = dict(condition, code=dict(condition["code"], text="Type 2 diabetes"))
+        self.assertEqual(projection(differing)["code"]["text"], "Type 2 diabetes")
+        report = {"resourceType": "DiagnosticReport", "id": "r1", "subject": {"reference": "Patient/p1"},
+            "issued": "2020-01-01T00:00:01.123+00:00", "effectiveDateTime": "2020-01-01T00:00:00+00:00",
+            "result": [{"reference": "Observation/o1", "display": "Hemoglobin [Mass/volume] in Blood"}]}
+        self.assertEqual(projection(report), {"resourceType": "DiagnosticReport", "id": "r1",
+            "effectiveDateTime": "2020-01-01T00:00:00+00:00", "result": [{"reference": "Observation/o1"}]})
+
+    def test_v6_page_size_cap(self):
+        tools = PatientTools(fake_client(), "Patient/p1")
+        self.assertEqual(TOOL_DEFINITIONS[0]["function"]["parameters"]["properties"]["count"]["maximum"], MAX_COUNT)
+        result = tools.execute("search_fhir", {"resource_type": "Observation", "count": MAX_COUNT + 1})
+        self.assertIn("next_page", result["error"])
+        self.assertNotIn("error", tools.execute("search_fhir", {"resource_type": "Observation", "count": MAX_COUNT}))
 
     def test_strict_search_and_external_pagination_protection(self):
         client = FHIR("http://localhost:8080/fhir", strict_search=True)
@@ -326,11 +366,14 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(episode["final"]["answer"], corrected)
         self.assertEqual(episode["metrics"]["protocol_errors"], 1)
         self.assertEqual(episode["answer_contract"], "Products at discharge follow-up")
-        schema = model.inputs[0][1][-1]["function"]["parameters"]["properties"]["answer"]
-        self.assertEqual(schema, json_schema(contract_for_question(question)[1]))
-        self.assertNotIn("previous_admitted_at", canonical(schema))
-        self.assertIn("Answer JSON Schema", model.inputs[0][0][1]["content"])
-        self.assertEqual(TOOL_DEFINITIONS[-1]["function"]["parameters"]["properties"]["answer"], {"type": "object"})
+        # v6: the selected schema appears once, in the user message; finish stays generic.
+        schema = canonical(json_schema(contract_for_question(question)[1]))
+        user = model.inputs[0][0][1]["content"]
+        self.assertIn("Answer JSON Schema:\n" + schema, user)
+        self.assertNotIn("previous_admitted_at", schema)
+        finish_answer = model.inputs[0][1][-1]["function"]["parameters"]["properties"]["answer"]
+        self.assertEqual(set(finish_answer), {"type", "description"})
+        self.assertNotIn(schema, canonical(model.inputs[0][1]))
 
     def test_unknown_question_fails_before_model_or_http_instead_of_using_union(self):
         model, client = ScriptedModel([]), fake_client()
@@ -366,7 +409,8 @@ class AgentTests(unittest.TestCase):
         observed = [json.loads(m["content"]) for m in model.inputs[2][0] if m["role"] == "tool"]
         self.assertEqual(observed[-1]["resource"]["id"], "plt1")
         expected_schema = json_schema(contract_for_question(CBC_QUESTION)[1])
-        self.assertEqual(model.inputs[0][1], tools_for_answer(expected_schema))
+        self.assertEqual(model.inputs[0][1], tool_definitions())
+        self.assertIn(canonical(expected_schema), model.inputs[0][0][1]["content"])
 
     def test_calculator_result_reaches_model_and_counts_against_tool_budget(self):
         model = ScriptedModel([
@@ -567,7 +611,7 @@ class AgentTests(unittest.TestCase):
             self.assertIn("pilot/contract.py", records[0]["code_sha256"])
             contract = records[0]["public_answer_contracts"]["ID_SECRET_SENTINEL"]
             self.assertEqual(contract["name"], "Latest CBC")
-            self.assertEqual(contract["schema"], model.inputs[0][1][-1]["function"]["parameters"]["properties"]["answer"])
+            self.assertIn("Answer JSON Schema:\n" + canonical(contract["schema"]), model.inputs[0][0][1]["content"])
             first_prompt = canonical(model.inputs[0])
             self.assertIn("QUESTION_SENTINEL", first_prompt)
             for hidden in ("ID_SECRET_SENTINEL", "FAMILY_SECRET_SENTINEL", "OPERATIONS_SECRET_SENTINEL", "SECRET_ORACLE", "11.35"):

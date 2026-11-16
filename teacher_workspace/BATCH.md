@@ -135,3 +135,23 @@ python3 -m teacher.report --output outputs/teacher-batches/sonnet55-high-28-v1 \
 
 Claude Code and Codex count cached tokens differently, and their subscription
 allowances differ, so compare token totals with care.
+
+### Usage limits (Claude teacher)
+
+If a Claude attempt ends because the subscription's 5-hour usage limit was reached,
+the batch keeps the backend running, sleeps until the reset time Claude reports (plus
+2 minutes), and retries that question in a fresh session and output folder
+(`<id>-retry1`, ...). It stops instead (`stop_reason` in `summary.json`) when:
+- a longer window, such as the 7-day limit, is exhausted
+- the reset falls outside the job's time budget
+- the same question is rejected 3 times
+- the error is not a usage limit
+
+If Claude ends its own run normally while the episode is still open (no error, no
+permission denial, no usage limit), that question counts as a failed attempt and the
+batch continues. It is counted in `abandoned_attempts` and retried on a later resume.
+Three abandoned questions in a row stop the batch (`repeated_abandoned_episodes`).
+
+`attempted` counts questions that have a finished attempt, including abandoned ones.
+Interruptions are counted in `interrupted_attempts` and `usage_limit_waits`. Resuming skips any evaluated attempt
+except `model_error`, so retried questions are not run again.

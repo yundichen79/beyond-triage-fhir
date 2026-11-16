@@ -9,7 +9,7 @@ import shutil
 
 from pilot.agent import MODEL_REVISION, SYSTEM_PROMPT, Settings
 from pilot.contract import INTERFACE_VERSION, contract_for_question, json_schema
-from pilot.tools import tools_for_answer
+from pilot.tools import tool_definitions
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,7 +27,7 @@ def public_episode(row):
         'episode_id': opaque_id(row), 'question': row['question'],
         'patient_reference': row['patient_id'], 'interface_version': INTERFACE_VERSION,
         'system_prompt': SYSTEM_PROMPT, 'answer_schema': schema,
-        'tools': tools_for_answer(schema),
+        'tools': tool_definitions(),
         'budgets': {key: value for key, value in asdict(Settings()).items()
                     if key.startswith('max_')},
         'token_accounting': {

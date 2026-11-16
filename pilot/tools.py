@@ -36,43 +36,35 @@ SORT_FIELDS = {
     }.items()
 }
 SORT_FIELDS["Condition"].update({"abatement-date", "recorded-date"})
+# Interface v6: no subject (patient scope is automatic) and no DiagnosticReport.issued
+# (publication time, never the report time). Every id and reference is kept.
 FIELDS = {
     "Patient": {"birthDate", "gender", "deceasedDateTime"},
-    "Encounter": {"status", "class", "subject", "period", "diagnosis", "reasonReference"},
-    "Condition": {"code", "clinicalStatus", "verificationStatus", "subject", "encounter", "onsetDateTime", "abatementDateTime", "recordedDate"},
-    "Observation": {"status", "code", "subject", "encounter", "effectiveDateTime", "effectivePeriod", "valueQuantity", "component", "dataAbsentReason"},
-    "DiagnosticReport": {"status", "code", "subject", "encounter", "effectiveDateTime", "effectivePeriod", "issued", "result"},
-    "MedicationRequest": {"status", "intent", "subject", "encounter", "medicationCodeableConcept", "medicationReference", "authoredOn", "reasonReference"},
+    "Encounter": {"status", "class", "period", "diagnosis", "reasonReference"},
+    "Condition": {"code", "clinicalStatus", "verificationStatus", "encounter", "onsetDateTime", "abatementDateTime", "recordedDate"},
+    "Observation": {"status", "code", "encounter", "effectiveDateTime", "effectivePeriod", "valueQuantity", "component", "dataAbsentReason"},
+    "DiagnosticReport": {"status", "code", "encounter", "effectiveDateTime", "effectivePeriod", "result"},
+    "MedicationRequest": {"status", "intent", "encounter", "medicationCodeableConcept", "medicationReference", "authoredOn", "reasonReference"},
     "Medication": {"code", "status", "ingredient"},
-    "Procedure": {"status", "code", "subject", "encounter", "performedDateTime", "performedPeriod", "reasonReference"},
+    "Procedure": {"status", "code", "performedDateTime", "performedPeriod", "encounter", "reasonReference"},
 }
+STATUS_CONCEPTS = ("clinicalStatus", "verificationStatus")
+MAX_COUNT = 20
 REFERENCE = re.compile(r"^([A-Za-z]+)/([A-Za-z0-9.-]{1,64})$")
-SEARCH_GUIDANCE = """Use FHIR search syntax, not resource JSON fields.
-Patient scope is automatic; omit patient and subject. Put count (1..50) at the
-top level, outside params. _sort uses the resource's field (prefix - for newest):
-date for Encounter/Observation/DiagnosticReport/Procedure, onset-date for Condition,
-authoredon for MedicationRequest. Never use sort, date:asc, or date desc.
-Encounter statuses include finished; Procedure statuses include completed;
-MedicationRequest statuses include active/completed. final/amended/corrected are
-Observation and DiagnosticReport statuses, not encounter/order/procedure statuses.
-Condition uses clinical-status (e.g. active/resolved) and verification-status
-(e.g. confirmed/refuted), not status or observation status values.
-Arrays mean repeated AND filters:
-date=["ge2025-01-01", "lt2026-01-01"]. Alternatives use a comma-separated string:
-status="final,amended,corrected". Token codes are strings such as "system|code",
-not coding objects. A date prefix and value form ONE string, e.g. "lt2026-01-01".
-Encounter inpatient/ambulatory class is class="IMP"/"AMB", not type="inpatient".
-Encounter references are "Encounter/logical-id", not "ambulatory" or a patient.
-Only use encounter references already seen in tool results; search encounters first.
-Condition dates use onset-date/abatement-date; MedicationRequest dates use authoredon.
-reasonReference is a returned resource field, not a supported search parameter:
-retrieve orders/procedures, inspect their reasonReference, then read those targets.
-Search CBC reports using DiagnosticReport code="http://loinc.org|58410-2";
-read their result references for observations. Blood pressure may be in Observation
-components (component-code or combo-code); category="blood-pressure" is not its code.
-Do not invent lower date bounds. Empty filtered results do not prove chart-wide
-absence: check filters and broaden the search within the question's scope.
-"""
+SEARCH_GUIDANCE = """Use FHIR search parameters, not resource JSON fields. Patient scope
+is automatic; omit patient and subject. count (1..20) goes at the top level, outside
+params; follow next_page for more. _sort takes one listed field, with - for newest
+first (e.g. -date); never sort, date:asc or date desc. final/amended/corrected are
+Observation and DiagnosticReport statuses only. Condition uses clinical-status and
+verification-status, not status. MedicationRequest dates use authoredon; Condition
+dates use onset-date/abatement-date. Token codes are "system|code" strings, not coding
+objects. A date prefix and value form one string ("lt2026-01-01"); repeat bounds as an
+array: ["ge2025-01-01", "lt2026-01-01"]. Inpatient/ambulatory is class="IMP"/"AMB",
+not type. encounter takes Encounter/id references already seen in tool results.
+reasonReference is not searchable: inspect it on retrieved orders and procedures, then
+read its targets. CBC reports: DiagnosticReport code="http://loinc.org|58410-2", then
+read result references. Blood pressure may be in Observation components (component-code
+or combo-code); category="blood-pressure" is not its code."""
 PARAMETER_SCHEMA = {"anyOf": [
     {"type": "string"},
     {"type": "array", "items": {"type": "string"}, "minItems": 1},
@@ -86,7 +78,7 @@ def function(name, description, properties, required):
 
 
 TOOL_DEFINITIONS = [
-    function("search_fhir", "Search the current patient's FHIR records. Returns one page, total, cumulative received count, complete, and an opaque next_page cursor. Follow next_page when more matches are needed. Clinical projections omit narratives and server metadata. Dates support repeated bounds such as [geTIMESTAMP, ltTIMESTAMP]. Supported parameters: "
+    function("search_fhir", "Search the current patient's FHIR records. Returns one page with total, cumulative received count, complete and a next_page cursor. Results omit narratives, server metadata and the patient subject. Supported parameters: "
              + "; ".join(kind + ": " + ", ".join(sorted(fields)) for kind, fields in SEARCH_FIELDS.items())
              + ". Supported status values: "
              + "; ".join(kind + ": " + ", ".join(sorted(values)) for kind, values in STATUSES.items())
@@ -96,9 +88,8 @@ TOOL_DEFINITIONS = [
              + ". " + SEARCH_GUIDANCE,
              {"resource_type": {"type": "string", "enum": sorted(SEARCH_FIELDS)},
               "params": {"type": "object", "description": "Only parameters listed for resource_type; arrays are AND, comma-separated strings are OR.",
-                         "properties": {key: PARAMETER_SCHEMA for key in sorted(set().union(*SEARCH_FIELDS.values()))},
-                         "additionalProperties": False},
-              "count": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}}, ["resource_type"]),
+                         "additionalProperties": PARAMETER_SCHEMA},
+              "count": {"type": "integer", "minimum": 1, "maximum": MAX_COUNT, "default": 10}}, ["resource_type"]),
     function("read_fhir", "Read a resource by a reference already seen in tool results, such as Observation/id or Medication/id. The supplied patient reference is also readable. Contained # references are available inside their parent resource.",
              {"reference": {"type": "string"}}, ["reference"]),
     function("next_page", "Retrieve the next page of an earlier search using its opaque cursor. No records are silently truncated. A cursor can be consumed once.",
@@ -108,20 +99,44 @@ TOOL_DEFINITIONS = [
               "decimal_places": {"type": "integer", "minimum": 0, "maximum": 6}},
              ["earlier", "later", "decimal_places"]),
     function("finish", "Submit the structured answer using the public answer contract, and cite retrieved ResourceType/id references. Use finish alone, after reading the evidence; it terminates the episode.",
-             {"answer": {"type": "object"}, "evidence": {"type": "array", "items": {"type": "string"}}}, ["answer", "evidence"]),
+             {"answer": {"type": "object", "description": "Must follow the Answer JSON Schema in the user message."},
+              "evidence": {"type": "array", "items": {"type": "string"}}}, ["answer", "evidence"]),
 ]
 
 
-def tools_for_answer(answer_schema):
-    """Bind finish to a question's public schema; never mutate shared definitions."""
-    definitions = deepcopy(TOOL_DEFINITIONS)
-    definitions[-1]["function"]["parameters"]["properties"]["answer"] = deepcopy(answer_schema)
-    return definitions
+def tool_definitions():
+    """The same tools for every question. Since v6 the answer schema appears once, in the
+    user message, instead of also inside finish."""
+    return deepcopy(TOOL_DEFINITIONS)
+
+
+def compact_concepts(value):
+    """Drop CodeableConcept.text where it repeats a coding display (names stay available)."""
+    if isinstance(value, list):
+        return [compact_concepts(v) for v in value]
+    if not isinstance(value, dict):
+        return value
+    result = {k: compact_concepts(v) for k, v in value.items()}
+    codings = result.get("coding")
+    if "text" in result and isinstance(codings, list) and any(
+            isinstance(c, dict) and c.get("display") == result["text"] for c in codings):
+        del result["text"]
+    return result
 
 
 def projection(resource):
     fields = FIELDS[resource["resourceType"]] | {"resourceType", "id"}
-    result = {k: v for k, v in resource.items() if k in fields}
+    result = {k: compact_concepts(v) for k, v in resource.items() if k in fields}
+    for key in STATUS_CONCEPTS:
+        # Status code systems are fixed by the field; a single code carries the meaning.
+        codes = [c.get("code") for c in (result.get(key) or {}).get("coding", [])
+                 if isinstance(c, dict) and c.get("code")] if isinstance(result.get(key), dict) else []
+        if len(codes) == 1:
+            result[key] = codes[0]
+    if resource["resourceType"] == "DiagnosticReport" and isinstance(result.get("result"), list):
+        # Result references stay; their long display strings are dropped (read the targets).
+        result["result"] = [{"reference": r["reference"]} if isinstance(r, dict) and "reference" in r else r
+                            for r in result["result"]]
     if resource.get("contained"):
         result["contained"] = [projection(r) for r in resource["contained"] if r.get("resourceType") in FIELDS]
     return result
@@ -247,8 +262,8 @@ class PatientTools:
                         + ", ".join(sorted(SEARCH_FIELDS[kind]))
                         + ". Patient scope is automatic; count belongs outside params. "
                         "Use _sort, not sort; reasonReference is inspected on retrieved resources, not searched.")
-                if type(count) is not int or not 1 <= count <= 50:
-                    raise ValueError("count must be an integer between 1 and 50")
+                if type(count) is not int or not 1 <= count <= MAX_COUNT:
+                    raise ValueError(f"count must be an integer between 1 and {MAX_COUNT}; follow next_page for more")
                 for key, value in params.items():
                     if not (isinstance(value, str) or isinstance(value, list) and value and all(isinstance(v, str) for v in value)):
                         raise ValueError(f"params.{key} must be a string or nonempty string array. "

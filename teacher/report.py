@@ -32,19 +32,37 @@ def teacher_usage(directory):
         item = event.get('item') or {}
         if event.get('type') == 'item.completed' and item.get('type') == 'command_execution':
             usage['shell_commands'] += 1
+    requests, has_result = {}, False
     for event in events(directory / 'claude-events.jsonl'):
         if event.get('type') == 'assistant':
+            # One API request can span several assistant events with the same message id;
+            # num_turns counts tool turns, not requests. Keep each request's latest usage.
+            message = event.get('message') or {}
+            requests[message.get('id')] = message.get('usage') or {}
             content = (event.get('message') or {}).get('content') or []
             usage['shell_commands'] += sum(block.get('type') == 'tool_use' for block in content
                                            if isinstance(block, dict))
         if event.get('type') == 'result' and isinstance(event.get('usage'), dict):
             records += 1
+            has_result = True
             raw = event['usage']  # Claude input_tokens exclude cache reads and writes.
             cached = raw.get('cache_read_input_tokens', 0) or 0
             usage.update(input_tokens=(raw.get('input_tokens', 0) or 0) + cached
                          + (raw.get('cache_creation_input_tokens', 0) or 0),
-                         cached_input_tokens=cached, output_tokens=raw.get('output_tokens', 0) or 0,
-                         model_requests=event.get('num_turns', 0) or 0)
+                         cached_input_tokens=cached, output_tokens=raw.get('output_tokens', 0) or 0)
+    if requests:
+        usage['model_requests'] = len(requests)
+    if requests and not has_result:
+        # The process ended before its usage summary. Per-request input and cache
+        # counts are complete; per-request output counts are not, so output is kept
+        # separately as a lower bound and the fallback is counted.
+        records += 1
+        cached = sum(u.get('cache_read_input_tokens') or 0 for u in requests.values())
+        usage.update(input_tokens=sum((u.get('input_tokens') or 0) + (u.get('cache_read_input_tokens') or 0)
+                                      + (u.get('cache_creation_input_tokens') or 0) for u in requests.values()),
+                     cached_input_tokens=cached,
+                     output_tokens_lower_bound=sum(u.get('output_tokens') or 0 for u in requests.values()),
+                     usage_from_requests=1)
     return dict(usage), records
 
 
@@ -149,6 +167,8 @@ def report(output, baseline=None):
             'Requested models and efforts are recorded CLI overrides, not a server-returned model fingerprint.',
             'Evidence coverage does not prove complete search or justified absence; review before SFT.',
             'Teacher usage is only reported for episodes with usage events; missing records are not zero cost.',
+            'usage_from_requests counts Claude episodes whose usage summary was missing; their input and cached '
+            'tokens come from per-request records and their output is only a lower bound.',
             'Codex and Claude Code count and cache tokens differently, and their subscription allowances differ; '
             'token totals are not directly an allowance comparison.',
             'Student transcript tokens are distinct from actual teacher usage; neither measures account allowance percentage.']}

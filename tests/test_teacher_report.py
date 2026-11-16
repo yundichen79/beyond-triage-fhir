@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from teacher.report import report
+from teacher.report import report, teacher_usage
 
 
 def write(path, value):
@@ -74,7 +74,9 @@ class TeacherReportTests(unittest.TestCase):
                 {'type': 'turn.completed', 'usage': {'input_tokens': 1000, 'cached_input_tokens': 800,
                                                      'output_tokens': 50}}]))
             (claude / 'attempts/a/claude-events.jsonl').write_text('\n'.join(json.dumps(e) for e in [
-                {'type': 'assistant', 'message': {'content': [{'type': 'tool_use'}, {'type': 'tool_use'}]}},
+                {'type': 'assistant', 'message': {'id': 'm1', 'content': [{'type': 'tool_use'}]}},
+                {'type': 'assistant', 'message': {'id': 'm1', 'content': [{'type': 'tool_use'}]}},
+                {'type': 'assistant', 'message': {'id': 'm2', 'content': [{'type': 'text'}]}},
                 {'type': 'result', 'num_turns': 3, 'usage': {'input_tokens': 10,
                  'cache_read_input_tokens': 300, 'cache_creation_input_tokens': 90, 'output_tokens': 40}}]))
             with contextlib.redirect_stdout(io.StringIO()):
@@ -83,10 +85,27 @@ class TeacherReportTests(unittest.TestCase):
             self.assertEqual(result['matched_episode_ids'], ['a'])
             self.assertEqual(result['matched_new']['recorded_teacher_usage'], {
                 'shell_commands': 2, 'input_tokens': 400, 'cached_input_tokens': 300,
-                'output_tokens': 40, 'model_requests': 3})
+                'output_tokens': 40, 'model_requests': 2})
             self.assertEqual(result['matched_previous']['recorded_teacher_usage'], {
                 'shell_commands': 1, 'input_tokens': 1000, 'cached_input_tokens': 800, 'output_tokens': 50})
             self.assertIn('claude-sonnet-5-5', (claude / 'COMPARISON.md').read_text())
+
+    def test_claude_usage_falls_back_to_requests_when_the_summary_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            attempt = Path(directory)
+            (attempt / 'claude-events.jsonl').write_text('\n'.join(json.dumps(e) for e in [
+                {'type': 'assistant', 'message': {'id': 'm1', 'content': [{'type': 'tool_use'}],
+                 'usage': {'input_tokens': 5, 'cache_creation_input_tokens': 3000, 'output_tokens': 2}}},
+                {'type': 'assistant', 'message': {'id': 'm1', 'content': [{'type': 'text'}],
+                 'usage': {'input_tokens': 5, 'cache_creation_input_tokens': 3000, 'output_tokens': 9}}},
+                {'type': 'assistant', 'message': {'id': 'm2', 'content': [{'type': 'tool_use'}],
+                 'usage': {'input_tokens': 4, 'cache_read_input_tokens': 3000,
+                           'cache_creation_input_tokens': 500, 'output_tokens': 7}}}]))
+            usage, records = teacher_usage(attempt)
+            self.assertEqual(records, 1)
+            self.assertEqual(usage, {'shell_commands': 2, 'model_requests': 2, 'input_tokens': 6509,
+                                     'cached_input_tokens': 3000, 'output_tokens_lower_bound': 16,
+                                     'usage_from_requests': 1})
 
 
 if __name__ == '__main__':

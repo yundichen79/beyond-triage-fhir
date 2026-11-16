@@ -35,6 +35,75 @@ CODEX_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 CLAUDE_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 # The client may wait up to 300 s for the backend; give the shell tool more than that.
 CLAUDE_BASH_TIMEOUT_MS = '360000'
+# After the episode ends the CLI writes a closing message and then its usage
+# summary; killing it sooner loses the usage record.
+EXIT_GRACE_SECONDS = 60
+# A 5-hour subscription limit is waited out inside the job; anything else stops it.
+RESET_MARGIN_SECONDS = 120
+MAX_LIMIT_RETRIES = 3
+# A teacher that ends its own run with the episode open fails that question only;
+# several in a row point to a systemic problem and stop the batch.
+MAX_CONSECUTIVE_ABANDONED = 3
+
+
+def usage_limit(attempt_dir):
+    """The usage-limit rejection a Claude attempt ended on: (window, resets_at epoch
+    seconds), or None. window is 'five_hour', or 'other' when any longer window
+    (e.g. the 7-day limit) is exhausted."""
+    path = Path(attempt_dir) / 'claude-events.jsonl'
+    if not path.exists():
+        return None
+    found = None
+    for line in path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        info = event.get('rate_limit_info') if event.get('type') == 'rate_limit_event' else None
+        if not isinstance(info, dict) or info.get('status') != 'rejected':
+            continue
+        windows = info.get('unifiedWindows') or {}
+        longer = any(isinstance(window, dict) and window.get('status') == 'rejected'
+                     for name, window in windows.items() if name != 'five_hour')
+        kind = 'five_hour' if info.get('rateLimitType') == 'five_hour' and not longer else 'other'
+        found = (kind, info.get('resetsAt'))
+    return found
+
+
+def abandoned_episode(attempt_dir):
+    """True when Claude ended its own run normally while the episode was still open: a
+    final non-error result, no permission denials and no usage-limit rejection. Auth,
+    permission and limit failures are not abandonment."""
+    path = Path(attempt_dir) / 'claude-events.jsonl'
+    if not path.exists():
+        return False
+    result = None
+    for line in path.read_text().splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get('type') == 'result':
+            result = event
+    return (result is not None and result.get('is_error') is False
+            and not result.get('permission_denials') and usage_limit(attempt_dir) is None)
+
+
+def limit_wait(limit, elapsed, now, max_run_seconds, episode_timeout, retries):
+    """(seconds to sleep before retrying, None) or (None, stop reason)."""
+    if limit is None:
+        return None, 'teacher_runtime_error'
+    kind, resets_at = limit
+    if kind != 'five_hour':
+        return None, 'usage_limit_longer_window'
+    if not isinstance(resets_at, (int, float)) or isinstance(resets_at, bool):
+        return None, 'usage_limit_unknown_reset'
+    if retries >= MAX_LIMIT_RETRIES:
+        return None, 'usage_limit_repeated'
+    wait = max(0.0, resets_at - now) + RESET_MARGIN_SECONDS
+    if elapsed + wait + episode_timeout > max_run_seconds:
+        return None, 'usage_limit_beyond_run_budget'
+    return wait, None
 
 
 def teacher_instructions():
@@ -187,8 +256,8 @@ def teacher_command(teacher, executable, session, teacher_model=None, reasoning_
 class CodexDriver:
     """Run one teacher CLI process for one question (Codex or Claude Code)."""
 
-    def __init__(self, command, output, timeout, cwd, teacher='codex'):
-        self.command, self.output, self.timeout = command, output, timeout
+    def __init__(self, command, output, timeout, cwd, teacher='codex', grace=EXIT_GRACE_SECONDS):
+        self.command, self.output, self.timeout, self.grace = command, output, timeout, grace
         self.cwd, self.teacher = cwd, teacher
         self.process, self.started, self.handles = None, None, []
 
@@ -215,7 +284,7 @@ class CodexDriver:
     def close(self):
         if self.process is not None:
             try:
-                self.process.wait(timeout=3)
+                self.process.wait(timeout=self.grace)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(self.process.pid, signal.SIGTERM)
@@ -341,7 +410,10 @@ def main():
     output.mkdir(parents=True, mode=0o700)
     settings = Settings()
     started = time.monotonic()
+    # attempted counts questions with a finished attempt; usage-limit interruptions
+    # are counted separately and retried in a fresh session.
     summary = {'planned': len(selected), 'attempted': 0, 'correct_with_evidence': 0,
+               'interrupted_attempts': 0, 'usage_limit_waits': 0, 'abandoned_attempts': 0,
                'complete': False, 'stop_reason': None}
     atomic_json(output / 'batch.json', {'dataset_sha256': dataset_hash,
         'episode_ids': [opaque_id(r) for r in selected], 'resume_from': [str(p) for p in args.resume_from],
@@ -357,26 +429,59 @@ def main():
 
     def after_verify(client, selected_rows, snapshot):
         client.strict_search = True
+        abandoned_in_a_row = 0
         with (output / 'results.jsonl').open('x') as results:
             for row in selected_rows:
-                if time.monotonic() - started + args.episode_timeout > args.max_run_seconds:
-                    summary['stop_reason'] = 'run_time_budget'
-                    break
                 eid = opaque_id(row)
-                print(f'Teacher question {summary["attempted"] + 1}/{len(selected_rows)}: {eid}', flush=True)
-                result = attempt(row, client, tokenizer, settings, sessions / eid,
-                    output / 'attempts' / eid, executable, args.episode_timeout,
-                    args.teacher_model, args.reasoning_effort, args.teacher)
-                results.write(json.dumps(result) + '\n')
-                results.flush()
-                os.fsync(results.fileno())
-                summary['attempted'] += 1
-                summary['correct_with_evidence'] += int(result['scores']['answer_correct_with_evidence'])
-                atomic_json(output / 'summary.json', summary)
-                # Auth/permission/runtime problems must not trigger hundreds of
-                # identical paid/account-consuming retries on subsequent questions.
-                if result['status'] == 'model_error':
-                    summary['stop_reason'] = 'teacher_runtime_error'
+                retries = 0
+                while not summary['stop_reason']:
+                    if time.monotonic() - started + args.episode_timeout > args.max_run_seconds:
+                        summary['stop_reason'] = 'run_time_budget'
+                        break
+                    # A retry gets its own session and output; the interrupted attempt is kept.
+                    name = eid if retries == 0 else f'{eid}-retry{retries}'
+                    print(f'Teacher question {summary["attempted"] + 1}/{len(selected_rows)}: {name}', flush=True)
+                    result = attempt(row, client, tokenizer, settings, sessions / name,
+                        output / 'attempts' / name, executable, args.episode_timeout,
+                        args.teacher_model, args.reasoning_effort, args.teacher)
+                    results.write(json.dumps(dict(result, attempt=name)) + '\n')
+                    results.flush()
+                    os.fsync(results.fileno())
+                    if result['status'] != 'model_error':
+                        abandoned_in_a_row = 0
+                        summary['attempted'] += 1
+                        summary['correct_with_evidence'] += int(result['scores']['answer_correct_with_evidence'])
+                        atomic_json(output / 'summary.json', summary)
+                        break
+                    if args.teacher == 'claude' and abandoned_episode(output / 'attempts' / name):
+                        # A failed attempt for this question only; a later resume retries it.
+                        abandoned_in_a_row += 1
+                        summary['attempted'] += 1
+                        summary['abandoned_attempts'] += 1
+                        if abandoned_in_a_row >= MAX_CONSECUTIVE_ABANDONED:
+                            summary['stop_reason'] = 'repeated_abandoned_episodes'
+                        else:
+                            print(f'Teacher ended its run with {eid} unfinished; continuing', flush=True)
+                        atomic_json(output / 'summary.json', summary)
+                        break
+                    summary['interrupted_attempts'] += 1
+                    # Only a 5-hour subscription limit is waited out. Auth, permission and
+                    # other runtime problems still stop the batch instead of repeating.
+                    limit = usage_limit(output / 'attempts' / name) if args.teacher == 'claude' else None
+                    wait, stop = limit_wait(limit, time.monotonic() - started, time.time(),
+                                            args.max_run_seconds, args.episode_timeout, retries)
+                    if stop:
+                        summary['stop_reason'] = stop
+                    else:
+                        summary['usage_limit_waits'] += 1
+                        print(f'Usage limit (five_hour): waiting {wait / 60:.0f} min for the reset, '
+                              f'then retrying {eid} in a fresh session', flush=True)
+                    atomic_json(output / 'summary.json', summary)
+                    if stop:
+                        break
+                    time.sleep(wait)
+                    retries += 1
+                if summary['stop_reason']:
                     break
         summary['complete'] = summary['attempted'] == summary['planned']
         summary['stop_reason'] = summary['stop_reason'] or 'all_selected_attempted'

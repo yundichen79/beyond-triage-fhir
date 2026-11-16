@@ -8,7 +8,7 @@ import re
 import time
 
 from dataset.common import canonical
-from pilot.tools import PatientTools, tools_for_answer
+from pilot.tools import PatientTools, tool_definitions as shared_tool_definitions
 from pilot.contract import answer_error, contract_for_question, json_schema
 
 
@@ -35,8 +35,8 @@ Return valid JSON: close every object and array before ending a tool_call block.
 Orders do not establish medication administration or use.
 Return UTC timestamps with timezone, coded concepts, stated units, and requested
 calculations. Do not invent values, indications, discontinuation, or causal effects.
-For a DiagnosticReport, report_time is effectiveDateTime (or effectivePeriod.start),
-not issued. Copy the recorded timestamp exactly; do not add issued's fractional seconds.
+For a DiagnosticReport, report_time is effectiveDateTime (or effectivePeriod.start).
+Copy the recorded timestamp exactly.
 For changes requested to one decimal, compute later minus earlier and round the
 change to one decimal using decimal half-even rounding. Do not round source measurements.
 Finish with the finish tool, alone in its turn, after reading its evidence. A final
@@ -62,7 +62,8 @@ Arrays are unordered, but retain separate orders when the question requests orde
 Missing calculated changes are null. Round only calculations that the question
 requests to one decimal; retain measurement precision.
 
-The user message and finish tool contain ONE answer JSON Schema for this question.
+The user message contains ONE answer JSON Schema for this question; finish's answer
+must follow it.
 Follow its required fields and nesting exactly. Conditional alternatives describe
 records found versus absent, not different tasks. Do not include a task-name wrapper.
 This schema specifies the answer format; it supplies no patient values or evidence.
@@ -221,7 +222,7 @@ def run_agent(question, patient, model, client, settings, seed):
     """Only question and patient context enter the model; all scoring is external."""
     contract_name, answer_shape = contract_for_question(question)
     answer_schema = json_schema(answer_shape)
-    tool_definitions = tools_for_answer(answer_schema)
+    tool_definitions = shared_tool_definitions()
     tools = PatientTools(client, patient)
     messages = [{"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"Patient reference: {patient}\n\n{question}"

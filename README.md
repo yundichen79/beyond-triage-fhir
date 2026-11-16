@@ -147,6 +147,26 @@ V5 is covered by offline regression tests only; its effect on model accuracy is
 unmeasured. Use a fresh output path for evaluation and provide the same interface
 to comparison systems. V4 artifacts remain historical evidence of v4 behavior.
 
+Interface version 6 makes tool results smaller so a single search no longer fills the
+16K-token student context, which caused most teacher `context_limit` failures:
+
+- `search_fhir` returns at most 20 resources per page (was 50); follow `next_page` for more.
+- Results omit `subject` (patient scope is automatic) and `DiagnosticReport.issued`.
+- Condition `clinicalStatus` and `verificationStatus` are shortened to their bare code.
+- `code.text` is dropped when it repeats a coding display. DiagnosticReport `result`
+  references lose their long `display` strings.
+- The answer schema appears once, in the user message. `finish` is the same for every
+  question.
+- The `search_fhir` description drops guidance repeated elsewhere, and its parameter
+  schema no longer lists every key.
+
+Every resource id and reference is kept, so citations and scoring are unchanged. An
+offline test re-derives all 14 families' ground-truth answers from v6 projections; it
+restores only `subject` and the full status concepts. On the 28-question teacher
+selection, the first turn shrinks from 4,298 to 2,976 student tokens on average, and
+projected resources shrink by 19–40% depending on type. V6 changes what the model sees,
+so trajectories and zero-shot results from v5 and v6 are not directly comparable.
+
 ```bash
 python3 -m pilot.run plan        # Preview selection without a model download
 bash scripts/prepare_pilot.sh   # Install dependencies and cache the pinned model

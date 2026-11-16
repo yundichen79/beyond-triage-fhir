@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 import re
 
 
-INTERFACE_VERSION = "5"
+INTERFACE_VERSION = "6"
 CONCEPT = {"system": "string", "code": "string", "name": "string"}
 CONDITION = {"condition": CONCEPT, "onset": ("date", None)}
 FOUND = {"status": {"found"}, "time": "timestamp", "value": "number", "unit": "string"}

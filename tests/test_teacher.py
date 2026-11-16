@@ -8,9 +8,12 @@ import threading
 import time
 import unittest
 
-from pilot.agent import SYSTEM_PROMPT, Settings, run_agent
+import subprocess
+import sys
+
+from pilot.agent import SYSTEM_PROMPT, Settings, parse_calls, run_agent
 from teacher.bridge import FileTeacher, atomic_json
-from teacher.client import render, respond, show, wait_for_turn
+from teacher.client import action_text, render, respond, show, wait_for_turn
 from teacher.prepare import public_episode
 from test_pilot import CBC_QUESTION, fake_client
 
@@ -46,8 +49,9 @@ class TeacherTests(unittest.TestCase):
         packet = public_episode(row)
         self.assertNotIn('SECRET', json.dumps(packet))
         self.assertNotIn('PRIVATE', json.dumps(packet))
-        self.assertEqual(packet['tools'][-1]['function']['parameters']['properties']['answer'],
-                         packet['answer_schema'])
+        # v6: the schema is exported once; the finish tool is the same for every question.
+        self.assertIn('properties', packet['answer_schema'])
+        self.assertNotIn('properties', packet['tools'][-1]['function']['parameters']['properties']['answer'])
         for split in ('test', 'validation'):
             with self.assertRaises(ValueError):
                 public_episode(dict(row, split=split))
@@ -128,6 +132,25 @@ class TeacherTests(unittest.TestCase):
                 final = {'status': 'step_limit', 'final': None, 'note': 'Episode ended.'}
                 atomic_json(session / 'state.json', final)
                 self.assertEqual(render(session, wait_for_turn(session, wait=1)), final)
+
+    def test_single_line_shell_argument_and_call_arrays_reach_the_student_parser(self):
+        self.assertEqual(action_text('{"name":"x","arguments":{}}'), '{"name":"x","arguments":{}}')
+        self.assertEqual(action_text('not json'), 'not json')
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            atomic_json(session / 'state.json', {'status': 'awaiting_response', 'turn_id': 't1'})
+            atomic_json(session / 'turn.json', {'status': 'awaiting_response', 'turn_id': 't1'})
+            client = Path(__file__).resolve().parents[1] / 'teacher/client.py'
+            command = (f"{sys.executable} {client} --session {session} --wait 0 respond "
+                       """'[{"name":"read_fhir","arguments":{"reference":"Observation/a"}},"""
+                       """{"name":"search_fhir","arguments":{"resource_type":"Condition","""
+                       """"params":{"code:text":"Alzheimer\\u0027s"}}}]'""")
+            done = subprocess.run(['bash', '-c', command], capture_output=True, text=True, timeout=30)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            submitted = json.loads((session / 'response.json').read_text())
+            calls = parse_calls(submitted['text'])
+            self.assertEqual([c['name'] for c in calls], ['read_fhir', 'search_fhir'])
+            self.assertEqual(calls[1]['arguments']['params']['code:text'], "Alzheimer's")
 
     def test_context_budget_blocks_before_teacher_input(self):
         with tempfile.TemporaryDirectory() as directory:
