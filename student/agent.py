@@ -128,7 +128,7 @@ class Generation:
 
 class TransformersModel:
     """Load only the prepared checkpoint; no model download during a GPU run."""
-    def __init__(self, settings, model_path=None):
+    def __init__(self, settings, model_path=None, adapter=None):
         try:
             import torch
             import transformers
@@ -148,10 +148,18 @@ class TransformersModel:
                 source, torch_dtype=torch.bfloat16, device_map={"": "cuda:0"}, **kwargs).eval()
         except OSError as exc:
             raise ValueError("Prepared model checkpoint is unavailable; run bash scripts/prepare_model.sh") from exc
+        if adapter:
+            # A LoRA adapter trained by sft.train, applied on top of the same pinned base model.
+            try:
+                from peft import PeftModel
+            except ImportError as exc:
+                raise ValueError("Loading an adapter needs peft; run bash scripts/prepare_model.sh") from exc
+            self.model = PeftModel.from_pretrained(self.model, str(adapter)).eval()
         self.metadata = {"model": source, "revision": getattr(self.model.config, "_commit_hash", None)
                          or (MODEL_REVISION if not model_path else None), "thinking": False,
                          "torch": torch.__version__, "transformers": transformers.__version__,
-                         "gpu": torch.cuda.get_device_name(0), "dtype": "bfloat16"}
+                         "gpu": torch.cuda.get_device_name(0), "dtype": "bfloat16",
+                         "adapter": str(adapter) if adapter else None}
 
     def seed(self, value):
         self.transformers.set_seed(value)

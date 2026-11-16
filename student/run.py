@@ -1,4 +1,8 @@
-"""Plan, prepare, run and summarize a zero-shot run of the student model on training questions."""
+"""Plan, prepare, run and summarize runs of the student model.
+
+`--split train` runs the 56-question training diagnostic (four per family);
+`--split validation` or `--split test` runs every question of that held-out split.
+"""
 
 import argparse
 from collections import Counter, defaultdict
@@ -48,9 +52,17 @@ def select_questions(rows, per_family=4, seed=4880):
     return selected
 
 
+def split_questions(rows, split):
+    """Every question of a held-out split, in a stable order."""
+    selected = sorted((r for r in rows if r["split"] == split), key=lambda r: r["id"])
+    if not selected:
+        raise ValueError(f"No {split} questions in the dataset")
+    return selected
+
+
 def selection_summary(rows):
     return {"questions": len(rows), "patients": len({r["patient_id"] for r in rows}),
-            "split": "train", "complexity": dict(Counter(r["complexity"] for r in rows)),
+            "split": "/".join(sorted({r["split"] for r in rows})), "complexity": dict(Counter(r["complexity"] for r in rows)),
             "families": {family: {"questions": sum(r["family"] == family for r in rows),
                 "negative": sum(r["family"] == family and negative(r["ground_truth_answer"], family) for r in rows)}
                 for family in sorted({r["family"] for r in rows})}}
@@ -79,16 +91,17 @@ def summarize(records):
 
 
 def execute_run(rows, client, model, settings, output, dataset, replace=False, source_id=None):
-    if not rows or any(row["split"] != "train" for row in rows):
-        raise ValueError("Zero-shot runs use training questions only")
+    if not rows or len({row["split"] for row in rows}) != 1:
+        raise ValueError("A run must cover questions from exactly one split")
     contracts = {}
     for row in rows:
         name, shape = contract_for_question(row["question"])
         contracts[row["id"]] = {"name": name, "schema": json_schema(shape)}
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    adapter = getattr(model, "metadata", {}).get("adapter")
     header = {"type": "run", "started_at": datetime.now(timezone.utc).isoformat(),
-              "mode": "zero-shot", "interface_version": INTERFACE_VERSION,
+              "mode": "sft" if adapter else "zero-shot", "interface_version": INTERFACE_VERSION,
               "model": model.metadata, "settings": asdict(settings),
               "selection": selection_summary(rows), "question_ids": [r["id"] for r in rows],
               "dataset_sha256": file_digest(Path(dataset) / "questions.jsonl"), "source_id": source_id,
@@ -143,9 +156,12 @@ def main():
     parser.add_argument("--dataset", type=Path, default=ROOT / "data/processed/cohort-200")
     parser.add_argument("--output", type=Path, default=ROOT / "outputs/zero-shot.jsonl")
     parser.add_argument("--replace", action="store_true", help="Replace an existing result file")
-    parser.add_argument("--per-family", type=int, default=4)
+    parser.add_argument("--split", choices=("train", "validation", "test"), default="train",
+                        help="train: four-per-family diagnostic; validation/test: every question of the split")
+    parser.add_argument("--per-family", type=int, default=4, help="Training diagnostic only")
     parser.add_argument("--seed", type=int, default=4880)
     parser.add_argument("--model-path", type=Path, help="Optional existing local checkpoint; otherwise use the pinned official model")
+    parser.add_argument("--adapter", type=Path, help="LoRA adapter folder from sft.train (e.g. <run>/epoch-2)")
     parser.add_argument("--max-steps", type=int, default=24)
     parser.add_argument("--max-tool-calls", type=int, default=48)
     parser.add_argument("--max-context-tokens", type=int, default=16384)
@@ -161,7 +177,9 @@ def main():
                 records = (json.loads(line) for line in handle if line.strip())
                 print(json.dumps(summarize(r for r in records if r.get("type") == "example"), indent=2))
             return
-        rows = select_questions(read_questions(args.dataset / "questions.jsonl"), args.per_family, args.seed)
+        questions = read_questions(args.dataset / "questions.jsonl")
+        rows = (select_questions(questions, args.per_family, args.seed) if args.split == "train"
+                else split_questions(questions, args.split))
         for row in rows:
             contract_for_question(row["question"])  # Fail before GPU loading or server setup.
         print(json.dumps(selection_summary(rows), indent=2), flush=True)
@@ -174,7 +192,9 @@ def main():
         settings = Settings(max_steps=args.max_steps, max_tool_calls=args.max_tool_calls,
                             max_context_tokens=args.max_context_tokens, max_new_tokens=args.max_new_tokens,
                             max_output_tokens=args.max_output_tokens, seed=args.seed)
-        model = TransformersModel(settings, args.model_path)
+        if args.adapter and not (args.adapter / "adapter_config.json").is_file():
+            raise ValueError(f"Not a LoRA adapter folder: {args.adapter}")
+        model = TransformersModel(settings, args.model_path, args.adapter)
         def after_verify(client, selected, snapshot):
             execute_run(selected, client, model, settings, args.output, args.dataset,
                           replace=args.replace, source_id=snapshot.id)

@@ -17,7 +17,7 @@ from dataset.live import run_job
 from dataset.oracle import evaluate
 from dataset.questions import build_questions, negative
 from student.agent import ContextLimit, Generation, Settings, SYSTEM_PROMPT, parse_calls, run_agent
-from student.run import execute_run, select_questions, selection_summary, summarize
+from student.run import execute_run, select_questions, selection_summary, split_questions, summarize
 from student.scoring import equal, score_episode
 from student.tools import FIELDS, MAX_COUNT, PatientTools, TOOL_DEFINITIONS, projection, tool_definitions
 from student.contract import answer_error, INTERFACE_VERSION, contract_for_question, json_schema
@@ -608,6 +608,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual([r["type"] for r in records], ["run", "example", "summary"])
             self.assertEqual(records[0]["system_prompt"], SYSTEM_PROMPT)
             self.assertEqual(records[0]["interface_version"], INTERFACE_VERSION)
+            self.assertEqual(records[0]["mode"], "zero-shot")
             self.assertIn("student/contract.py", records[0]["code_sha256"])
             contract = records[0]["public_answer_contracts"]["ID_SECRET_SENTINEL"]
             self.assertEqual(contract["name"], "Latest CBC")
@@ -620,9 +621,9 @@ class AgentTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 execute_run([row], fake_client(), model, Settings(), output, root)
             self.assertEqual(output.read_bytes(), before)
-            row["split"] = "test"
-            with self.assertRaisesRegex(ValueError, "training"):
-                execute_run([row], fake_client(), model, Settings(), root / "other.jsonl", root)
+            held_out = dict(row, id="other", split="test")
+            with self.assertRaisesRegex(ValueError, "one split"):
+                execute_run([row, held_out], fake_client(), model, Settings(), root / "other.jsonl", root)
 
 
 class ScoringAndSelectionTests(unittest.TestCase):
@@ -671,6 +672,13 @@ class ScoringAndSelectionTests(unittest.TestCase):
         self.assertEqual(summary["families"]["discharge_followup"]["negative"], 1)
         with self.assertRaises(ValueError):
             select_questions(rows, 5)
+        held_out = split_questions(rows, "test")
+        self.assertEqual(len(held_out), len(original))
+        self.assertTrue(all(r["split"] == "test" for r in held_out))
+        self.assertEqual(held_out, split_questions(list(reversed(rows)), "test"))
+        self.assertEqual(selection_summary(held_out)["split"], "test")
+        with self.assertRaises(ValueError):
+            split_questions(rows, "validation")
 
     def test_callback_runs_inside_server_lifetime_and_failure_still_cleans_up(self):
         with tempfile.TemporaryDirectory() as temporary:

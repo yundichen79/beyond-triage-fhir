@@ -1,7 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=beyond-student
+#SBATCH --account=cpsc4880
 #SBATCH --partition=gpu
-#SBATCH --gpus=l40s:1
+#SBATCH --qos=normal
+#SBATCH --gpus=1
+#SBATCH --constraint="gpu:a40|gpu:l40s"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00

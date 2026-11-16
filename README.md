@@ -25,8 +25,8 @@ the [teacher guide](teacher/README.md) for trajectory generation.
 | 3. Student environment | `student/` | Interface v6; used live in every teacher episode |
 | 4. Teacher trajectories | `teacher/` | Done for now: Claude Sonnet 5.5 (high effort), 306 grounded trajectories for 318 of 899 training questions |
 | 5. SFT data | `sft/data.py` | Done: clean (1,179 examples) and recovery (1,171) variants |
-| 6. SFT training | `sft/` | Not started |
-| 7. Baselines and evaluation | `student/run.py` | Zero-shot ran on training diagnostics only (v4/v5: 3 of 14 correct); validation/test evaluation not started |
+| 6. SFT training | `sft/train.py` | Ready: LoRA script, launcher and dry runs pass; GPU smoke test queued |
+| 7. Baselines and evaluation | `student/run.py` | Runner handles validation/test and LoRA adapters; v6 zero-shot on validation and test queued. Earlier zero-shot: training diagnostics only (v4/v5: 3 of 14 correct) |
 
 The [next steps](#next-steps) section lists what remains.
 
@@ -124,16 +124,23 @@ versions are not directly comparable):
   all 14 families' answers from v6 results. The first turn shrank from 4,298 to 2,976
   tokens on average.
 
-Running Qwen3-8B (zero-shot runner):
+Running Qwen3-8B:
 
 ```bash
-bash scripts/prepare_model.sh       # install torch/transformers and cache the pinned model
-python3 -m student.run plan         # preview the 56 training questions (4 per family)
-sbatch scripts/run_student.sbatch   # GPU run: one L40S, 8 CPUs, 64 GB
-python3 -m student.run summarize    # after the job
+bash scripts/prepare_model.sh                     # install torch/transformers/peft, cache the pinned model
+python3 -m student.run plan --split validation    # preview a selection
+sbatch scripts/run_student.sbatch --split test --output outputs/zero-shot-v6-test.jsonl
+python3 -m student.run summarize --output outputs/zero-shot-v6-test.jsonl
 ```
 
-Results go to `outputs/zero-shot.jsonl` and logs to `logs/student-<job-id>.log`.
+- **`--split`:** `train` is the 56-question diagnostic (4 per family); `validation`
+  and `test` run every question in that split. One run covers one split.
+- **`--adapter <run>/epoch-N`:** evaluates a fine-tuned model. The run header then
+  records `"mode": "sft"`.
+- **Hardware:** one A40 or L40S (48 GB), 8 CPUs and 64 GB memory on the free `gpu`
+  tier.
+- **Output:** results go to the `--output` file (default `outputs/zero-shot.jsonl`),
+  and logs to `logs/student-<job-id>.log`.
 `sbatch scripts/verify_student_queries.sbatch` reruns the live query checks.
 
 ## Teacher trajectories
@@ -196,6 +203,27 @@ python3 -m sft.data --corpus outputs/teacher-corpus/sonnet55-v6-20261116 \
 
 Each training set is about 5.2M prompt tokens and 173K completion tokens.
 
+## SFT training
+
+`sft/train.py` fine-tunes Qwen3-8B with LoRA on one data variant:
+- **Loss:** completion tokens only. Predictions are computed only for those positions,
+  which keeps memory low on prompts of up to about 14K tokens.
+- **Setup:** bf16 weights, LoRA on every attention and MLP projection, gradient
+  checkpointing.
+- **Defaults:** 2 epochs, learning rate 1e-4 with warmup and cosine decay, 16 examples
+  per optimizer step (138 steps in total), LoRA rank 16 / alpha 32.
+
+Each run writes, to a new folder under `outputs/sft-runs/`:
+- `train-config.json`: settings, data fingerprints and library versions
+- `train-log.jsonl`: training and dev losses
+- `epoch-<n>/`: one adapter per epoch
+
+`--dry-run` checks the data and tokenization without a GPU. It passed on both
+variants: every prompt and completion tokenizes the same apart as joined, and the
+longest example is 14,269 tokens. `--smoke` runs 2 steps on the longest examples.
+`scripts/train_sft.sbatch` launches training on one A40 or L40S (up to 24 hours, free
+tier).
+
 ## Scoring
 
 - **Answers:** structured outputs are compared deterministically. Coded concepts match
@@ -210,33 +238,43 @@ Each training set is about 5.2M prompt tokens and 173K completion tokens.
 
 ## Next steps
 
-1. **Spot-check the SFT data.** Read a few selected trajectories per family for invented
-   filters, wrong anchors and unsupported missing-record claims. Grounding is checked
-   automatically, but not search quality.
-2. **Prepare the training environment.**
-   - Run `scripts/prepare_model.sh`. The torch install in this clone's `.venv` was
-     broken and has been removed.
-   - Add PEFT and TRL (or an equivalent) to `requirements-model.txt`.
-   - Check disk space: the Qwen3-8B weights take about 16 GB, and the shared project
-     disk had about 36 GB free.
-3. **Write the training script (`sft/train.py`).**
-   - LoRA on Qwen3-8B in bf16, with completion-only loss.
-   - Gradient checkpointing, for prompts up to about 14K tokens on one 48 GB GPU.
-   - Track dev loss; launch through a Slurm script on the free `gpu` partition.
-   - Train one model on each data variant for a clean-versus-recovery ablation.
-4. **Extend the runner for evaluation (`student/run.py`).**
-   - Allow validation and test questions; it currently refuses anything outside
-     training.
-   - Load a LoRA adapter on top of the base model.
-   - Choose epochs, learning rate and variant on the validation split.
-5. **Run baselines on v6.**
-   - The zero-shot Qwen3-8B baseline on validation and test.
-   - Port the fixed TRIAGE-FHIR workflow onto the same environment and budgets.
-6. **Final test evaluation.** Freeze all settings first, then compare:
+1. **Check the SFT setup on a GPU.** Run the smoke test (queued): 2 optimizer steps on
+   the 16 longest examples. It confirms peak GPU memory, speed and adapter saving.
+   ```bash
+   sbatch scripts/train_sft.sbatch --smoke \
+     --data outputs/sft-data/sonnet55-v6-20261116-recovery --output outputs/sft-runs/smoke-recovery
+   ```
+2. **Spot-check the SFT data** while training runs. Read a few selected trajectories
+   per family for invented filters, wrong anchors and unsupported missing-record
+   claims. Grounding is checked automatically; search quality is not.
+3. **Train both variants** with the default settings: 2 epochs, learning rate 1e-4,
+   LoRA rank 16, 16 examples per step. That's one model on the clean data and one on
+   the recovery data, giving the clean-versus-recovery ablation:
+   ```bash
+   sbatch scripts/train_sft.sbatch --data outputs/sft-data/sonnet55-v6-20261116-recovery \
+     --output outputs/sft-runs/recovery-r16-lr1e-4
+   sbatch scripts/train_sft.sbatch --data outputs/sft-data/sonnet55-v6-20261116 \
+     --output outputs/sft-runs/clean-r16-lr1e-4
+   ```
+4. **Choose settings on the validation split.** Run each epoch's adapter on all 145
+   validation questions and pick the variant and epoch by grounded accuracy. Try
+   another learning rate or epoch count only if validation suggests it.
+   ```bash
+   sbatch scripts/run_student.sbatch --split validation \
+     --adapter outputs/sft-runs/recovery-r16-lr1e-4/epoch-2 --output outputs/sft-recovery-e2-validation.jsonl
+   ```
+5. **Zero-shot baseline on v6** (queued). Qwen3-8B without an adapter, on the full
+   validation and test splits, writing to `outputs/zero-shot-v6-{validation,test}.jsonl`.
+6. **Fixed-workflow baseline.** Port the TRIAGE-FHIR workflow onto the same environment,
+   tools and budgets.
+7. **Final test evaluation.** Freeze the chosen SFT settings, then run all three
+   systems on the 158 test questions. Compare:
    - accuracy, grounded accuracy and per-family (macro) accuracy
    - tool calls and tokens, and effort by difficulty
    - with patient-level bootstrap confidence intervals
-7. **Report.** State the limitations:
+
+   Each system is one sampled run (temperature 0.7, seed 4880); say so in the report.
+8. **Report.** State the limitations:
    - synthetic data
    - a partial corpus (318 of 899 training questions)
    - the `followup_medication_comparison` issues
@@ -253,7 +291,7 @@ configs/       Synthea, cohort and HAPI settings; frozen question selections
 dataset/       Cohort generation, questions and answer rules, validation, live verification
 student/       Student environment: agent loop, FHIR tools, answer contracts, scoring, runner
 teacher/       Teacher trajectory generation, comparison reports, corpus collection
-sft/           Conversion of teacher trajectories into SFT examples
+sft/           SFT data conversion and LoRA training
 scripts/       Preparation scripts and Slurm launchers
 tests/         Offline regression tests (dataset, FHIR, student, teacher, SFT data)
 data/          Raw cohort and processed dataset (data files not in Git)
