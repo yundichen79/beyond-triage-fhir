@@ -3,37 +3,47 @@
 Adaptive question answering over FHIR electronic health records, extending
 [TRIAGE-FHIR](https://github.com/yundichen79/triage-fhir).
 
-The planned comparison evaluates a fixed workflow, a zero-shot Qwen3-8B ReAct agent,
-and an agent trained with trajectory supervised fine-tuning (SFT). We measure
-answer accuracy alongside tool calls and token usage.
+**Question:** does supervised fine-tuning (SFT) on teacher trajectories make a small
+tool-using model better or more efficient at chart-review questions?
 
-See the [question catalog](data/README.md) for dataset rules, fields, and examples.
+**Systems compared,** all in the same FHIR environment with the same tools and budgets:
+1. the fixed TRIAGE-FHIR workflow
+2. a zero-shot Qwen3-8B agent
+3. Qwen3-8B fine-tuned on verified teacher trajectories
 
-## Current status
+**Metrics:** answer accuracy, accuracy with required evidence, tool calls and tokens.
 
-| Component | Status |
-| --- | --- |
-| Dataset | Built; local validation, source replay and clinical review passed |
-| Live FHIR verification | Passed for 200 patients / 1,202 questions; v4 query checks passed 18/18 |
-| Student interface | Version 6; used live in every teacher episode, live query check not yet rerun |
-| Zero-shot Qwen3-8B | Training diagnostics on v4/v5: 3/14 correct; not yet run on v6 |
-| Teacher trajectories | Claude Sonnet 5.5 (high effort): 306 grounded trajectories for 318 of 899 training questions; review pending |
-| SFT data | Two variants from all 306 grounded trajectories: clean (1,179 examples) and recovery (1,171) |
-| SFT training and evaluation | Planned: LoRA training, fixed-workflow comparison and held-out evaluation outstanding |
+See the [question catalog](data/README.md) for dataset rules, fields and examples, and
+the [teacher guide](teacher/README.md) for trajectory generation.
 
-## Data source and dataset
+## Pipeline and status
 
-**200 synthetic Massachusetts patients** were generated with Synthea v4.0.0 as
-FHIR R4 bundles with complete histories. Seeds and dates are pinned in
-[cohort.json](configs/cohort.json); exporter settings are in
-[synthea.properties](configs/synthea.properties). Original bundles and their
-generation record with checksums are preserved in `data/raw/batch-001/`.
+| Stage | Code | Status |
+| --- | --- | --- |
+| 1. Synthetic cohort and questions | `dataset/` | Done: 200 patients, 1,202 questions, validated and clinically reviewed |
+| 2. Live FHIR verification | `dataset/live.py` | Done: 200 patients / 1,202 answers recomputed through HTTP |
+| 3. Student environment | `student/` | Interface v6; used live in every teacher episode |
+| 4. Teacher trajectories | `teacher/` | Done for now: Claude Sonnet 5.5 (high effort), 306 grounded trajectories for 318 of 899 training questions |
+| 5. SFT data | `sft/data.py` | Done: clean (1,179 examples) and recovery (1,171) variants |
+| 6. SFT training | `sft/` | Not started |
+| 7. Baselines and evaluation | `student/run.py` | Zero-shot ran on training diagnostics only (v4/v5: 3 of 14 correct); validation/test evaluation not started |
 
-The dataset contains **1,202 questions across 14 clinical chart-review families**,
-using an exclusive cutoff of **2026-10-02 UTC**. Tasks cover encounter-linked
-conditions/orders, CBC and blood pressure, documented indications, medication
-comparisons, and longitudinal follow-up. Difficulty is provisional:
-499 simple, 548 intermediate, and 155 complex.
+The [next steps](#next-steps) section lists what remains.
+
+## Dataset
+
+**200 synthetic Massachusetts patients** were generated with Synthea v4.0.0 as FHIR R4
+bundles with complete histories:
+- seeds and dates: [cohort.json](configs/cohort.json)
+- exporter settings: [synthea.properties](configs/synthea.properties)
+- original bundles and their generation record with checksums: `data/raw/batch-001/`
+
+The dataset has **1,202 questions across 14 clinical chart-review families**, with an
+exclusive record cutoff of **2026-10-02 UTC**. Tasks cover encounter-linked conditions
+and orders, CBC and blood pressure, documented indications, medication comparisons and
+longitudinal follow-up. Every answer is computed by deterministic rules, with explicit
+time windows, units and supporting resource references. Difficulty labels are
+provisional: 499 simple, 548 intermediate, 155 complex.
 
 | Split | Patients | Questions |
 | --- | ---: | ---: |
@@ -41,224 +51,219 @@ comparisons, and longitudinal follow-up. Difficulty is provisional:
 | Validation | 22 | 145 |
 | Test | 27 | 158 |
 
-All questions for a patient stay in the same split.
+All questions for a patient stay in the same split. Only two processed files are kept,
+in `data/processed/cohort-200/`:
+- `questions.jsonl`: questions, structured ground truth, evidence references and
+  evaluator rules
+- `patient_splits.json`: patient-to-split assignments
 
-## Dataset construction
+**Construction:**
+1. Preserve the Synthea bundles and normalize references in a temporary SQLite index.
+2. Generate eligible questions and answers, including sampled missing-record cases.
+3. Validate answers, evidence, question rules and patient splits.
+4. Replay answers from the raw bundles, and review them clinically.
 
-1. Preserve Synthea bundles and normalize references in a temporary SQLite index.
-2. Generate eligible questions and deterministic Python answers, with explicit time
-   windows, units, supporting references, and sampled missing-record cases.
-3. Validate answers, evidence, question rules, and patient splits.
-4. Replay answers from raw bundles and conduct clinical review. Replay uses the
-   same answer rules; clinical review provides a separate check.
-
-Only two processed files are kept under `data/processed/cohort-200/`:
-
-| File | Purpose |
-| --- | --- |
-| `questions.jsonl` | Questions, structured ground truth, evidence references, and evaluator rules |
-| `patient_splits.json` | Patient-to-split assignments |
-
-### Build and validate
-
-Run from the repository root. Dataset commands use the Python standard library;
-Slurm launchers target Yale Bouchet. Data and artifacts are excluded from Git.
-For a fresh clone, generate the source cohort first:
+Build and check, from the repository root (dataset commands need only the Python
+standard library; launchers target Yale Bouchet):
 
 ```bash
-python3 -m dataset.cohort download
-sbatch scripts/generate_cohort.sbatch 1
-```
-
-Once generation finishes, or with preserved source bundles available:
-
-```bash
+python3 -m dataset.cohort download             # fresh clone only
+sbatch scripts/generate_cohort.sbatch 1        # fresh clone only
 python3 -m dataset.questions --output data/processed/cohort-200 --replace
 python3 -m dataset.validate --dataset data/processed/cohort-200
+python3 -m dataset.live prepare                # needs Apptainer
+sbatch scripts/verify_live_fhir.sbatch         # import charts, recompute every answer over HTTP
 ```
 
-### Verify against live FHIR
+**Known limitation:** `followup_medication_comparison` has two wording and rule problems.
+- Its question doesn't ask for elapsed days rounded to one decimal, but its label is
+  rounded.
+- When there is no follow-up, its evidence rule still requires every inpatient order
+  and Medication record.
 
-```bash
-python3 -m dataset.live prepare
-sbatch scripts/verify_live_fhir.sbatch
-```
+Both are left unchanged so the evaluated benchmark stays fixed. As a result the family
+contributes only one teacher trajectory.
 
-Preparation requires Apptainer. The job uses Java 21 and PostgreSQL 16.4 to import
-complete charts, check pagination, and recompute answers through HTTP. Failed
-requests remain errors. Indexes, servers, and operational artifacts are temporary;
-logs remain in `logs/`.
+## Student environment
 
-## Student environment and zero-shot runs
+`student/` is the environment every system answers in. A model gets:
+- the question and patient reference
+- shared instructions
+- one public answer schema chosen from the question wording
 
-The `student/` package is the environment every model answers in: the zero-shot
-Qwen3-8B baseline, the teacher that generates SFT trajectories, and the fine-tuned
-student. Qwen3-8B uses native tool calling with thinking disabled. Its input is the
-question, the patient reference, shared instructions, and a question-specific public
-answer schema. Tools provide patient-scoped search, reference reads, pagination, a
-decimal calculator and answer submission. Ground truth stays outside the model.
+It can use:
+- patient-scoped `search_fhir`
+- `read_fhir` for references already seen
+- `next_page`
+- a decimal `calculate`
+- `finish`, which must cite retrieved resources
 
-The zero-shot runner (`student.run`) selects **56 training questions from 44
-patients**, four per family including eight missing-record cases. Validation and test
-data are reserved, so these runs check agent behavior and do not estimate held-out
-performance.
+Ground truth never reaches the model. Episodes are limited to 24 turns, 48 tool calls
+and a 16,384-token transcript. Qwen3-8B uses native tool calling with thinking disabled.
 
-Interface history (each version changes what the model sees, so results from
-different versions are not directly comparable):
+Interface history (each version changes what the model sees, so results from different
+versions are not directly comparable):
 
 - **v2:** explicit FHIR query syntax, corrective parameter errors, and answers
-  validated against a public task structure before an episode can finish.
-- **v3:** bare JSON tool calls accepted; repeated identical failures or empty searches
-  warn on the third occurrence and end the episode (`repeated_failure`) on the fourth.
-- **v4:** one public answer schema chosen from the question wording alone; search
-  validation rejects wrong-resource statuses, contradictory filters, unsupported sort
-  fields and unseen encounter references. 18 live query checks passed; the 14-question
-  training diagnostic got 3 correct.
-- **v5:** a decimal `calculate` tool (later minus earlier, half-even rounding) and
-  revised retrieval instructions. Its 14-question training diagnostic got 3 grounded.
+  validated against a public structure.
+- **v3:** bare JSON tool calls accepted. Repeated identical failures warn on the third
+  occurrence and end the episode on the fourth.
+- **v4:** answer schema chosen from the question wording alone. Searches with
+  wrong-resource statuses, contradictory filters, unsupported sorts or unseen
+  encounters are rejected. 18 live query checks passed.
+- **v5:** a decimal `calculate` tool and revised retrieval instructions.
+- **v6 (current):** smaller tool results, so one search can no longer fill the student
+  context.
+  - Pages hold at most 20 resources.
+  - Results drop `subject`, `DiagnosticReport.issued` and long result `display` strings.
+  - Status concepts are reduced to bare codes, and `code.text` is dropped when it
+    repeats a display.
+  - The answer schema appears once, in the user message.
 
-Interface version 6 makes tool results smaller so a single search no longer fills the
-16K-token student context, which caused most teacher `context_limit` failures:
+  Every id and reference is kept, so scoring is unchanged. An offline test re-derives
+  all 14 families' answers from v6 results. The first turn shrank from 4,298 to 2,976
+  tokens on average.
 
-- `search_fhir` returns at most 20 resources per page (was 50); follow `next_page` for more.
-- Results omit `subject` (patient scope is automatic) and `DiagnosticReport.issued`.
-- Condition `clinicalStatus` and `verificationStatus` are shortened to their bare code.
-- `code.text` is dropped when it repeats a coding display. DiagnosticReport `result`
-  references lose their long `display` strings.
-- The answer schema appears once, in the user message. `finish` is the same for every
-  question.
-- The `search_fhir` description drops guidance repeated elsewhere, and its parameter
-  schema no longer lists every key.
-
-Every resource id and reference is kept, so citations and scoring are unchanged. An
-offline test re-derives all 14 families' ground-truth answers from v6 projections; it
-restores only `subject` and the full status concepts. On the 28-question teacher
-selection, the first turn shrinks from 4,298 to 2,976 student tokens on average, and
-projected resources shrink by 19–40% depending on type. V6 changes what the model sees,
-so trajectories and zero-shot results from v5 and v6 are not directly comparable.
+Running Qwen3-8B (zero-shot runner):
 
 ```bash
-python3 -m student.run plan        # Preview the selection without a model download
-bash scripts/prepare_model.sh      # Install dependencies and cache the pinned model
-sbatch scripts/run_student.sbatch  # GPU run after live verification passes
-python3 -m student.run summarize   # After the job finishes
+bash scripts/prepare_model.sh       # install torch/transformers and cache the pinned model
+python3 -m student.run plan         # preview the 56 training questions (4 per family)
+sbatch scripts/run_student.sbatch   # GPU run: one L40S, 8 CPUs, 64 GB
+python3 -m student.run summarize    # after the job
 ```
 
-The launcher requests one L40S GPU, eight CPU cores and 64 GB host memory. It starts
-isolated FHIR servers and verifies the selected charts before answering. Pinned
-dependencies are in [requirements-model.txt](requirements-model.txt). Results go to
-`outputs/zero-shot.jsonl` (run settings, transcripts, answers, scores and a summary)
-and logs to `logs/student-<job-id>.log`. Use `--output` for a new file, or `--replace`
-to overwrite an existing one. `sbatch scripts/verify_student_queries.sbatch` reruns the
-live query checks.
+Results go to `outputs/zero-shot.jsonl` and logs to `logs/student-<job-id>.log`.
+`sbatch scripts/verify_student_queries.sbatch` reruns the live query checks.
 
 ## Teacher trajectories
 
-A teacher model solves training questions through the same student environment, so
-every trajectory is already in the student's format. Each question runs in a fresh
-Claude Code process (`claude -p`) on a subscription login; API-key billing is refused.
-The process gets `teacher/TEACHER.md` as its system prompt and only one allowed
-command, `teacher_client.py`. Answers are scored privately after each episode. See
-[teacher/README.md](teacher/README.md) for launching, usage limits and resuming.
+The teacher solves training questions through the same student environment, so every
+trajectory is already in the student's format.
+- **Process:** each question runs in a fresh Claude Code process on a subscription
+  login (API-key billing is refused). The teacher's system prompt is
+  `teacher/TEACHER.md`, and it may run only `teacher_client.py`.
+- **Scoring:** answers are scored privately after each episode.
+- **Running out of usage:** the batch waits out 5-hour usage limits and resumes where
+  it stopped.
+
+Details are in the [teacher guide](teacher/README.md).
 
 On the 28-question v6 selection (two per family), Claude Sonnet 5.5 at high effort
-answered 25 correctly with full evidence. The current corpus is in
-`outputs/teacher-corpus/sonnet55-v6-20261116/`:
+answered 25 correctly with full evidence. The current corpus is
+`outputs/teacher-corpus/sonnet55-v6-20261116/`, built with `teacher.collect`:
 
 | | |
 | --- | --- |
-| Training questions with a finished attempt | 318 of 899 |
-| Grounded trajectories (`selected`) | 306, including 28 missing-record cases |
-| Difficulty of selected (simple / intermediate / complex) | 142 / 126 / 38 |
+| Training questions with a finished attempt | 318 of 899 (questions run in random order) |
+| Grounded trajectories (`selected`) | 306: 142 simple, 126 intermediate, 38 complex; 28 missing-record cases |
+| Families | All 14; thinnest: `followup_medication_comparison` 1, `admission_medication_comparison` 3, `glycemic_followup` 4, `renal_followup` 6, `cbc_change` 9 |
 | Mean tool calls per selected trajectory | 3.9 |
-
-`teacher.collect` builds the corpus from batch runs with identical student-interface
-code. It marks the shortest grounded attempt per question and leaves out hidden
-labels. Selected trajectories still need review of anchors, filters and absence
-claims before SFT.
-
-**Known limitation:** `followup_medication_comparison` contributes only one trajectory.
-Its question text does not ask for the elapsed days to be rounded to one decimal,
-though its label is rounded. And when there is no follow-up, its evidence rule still
-requires every inpatient order and Medication record. Both are left unchanged so the
-evaluated benchmark stays fixed.
+| Teacher input tokens per question | about 81K, mostly cached |
 
 ## SFT data
 
-`sft.data` converts the selected trajectories into training examples:
+`sft.data` turns the selected trajectories into training examples:
 
 ```bash
 python3 -m sft.data --corpus outputs/teacher-corpus/sonnet55-v6-20261116 \
-  --output outputs/sft-data/sonnet55-v6-20261116
+  --output outputs/sft-data/sonnet55-v6-20261116 [--mode recovery]
 ```
 
-- **Failed actions:** 110 of the 306 trajectories contain a failed action the teacher
-  recovered from (57 malformed turns, 89 failed tool calls). No trajectory is dropped
-  in either mode, and the model is never trained on a failed action.
-  - `--mode clean` (default) removes failed actions and their error feedback before
-    conversion. Every remaining action and result is real; the model sees only clean
-    demonstrations.
-  - `--mode recovery` keeps the conversation exactly as recorded. Failed turns stay in
-    later prompts, and the corrected turns that follow are trained in that context,
-    which teaches recovery from errors.
-- **Format:** one example per assistant turn. `prompt` is the exact text the student
-  sees before that turn: the pinned Qwen3-8B chat template with
-  `add_generation_prompt=True` and `enable_thinking=False`. `completion` is the turn in
-  Qwen's native `<tool_call>` format, ending with `<|im_end|>`. Train with loss on the
-  completion only.
+- **Format:** one example per assistant turn.
+  - `prompt` is the exact text the student sees before that turn: the pinned Qwen3-8B
+    chat template, generation prompt on, thinking off.
+  - `completion` is the turn in Qwen's native `<tool_call>` format, ending with
+    `<|im_end|>`.
+  - Train with loss on the completion only.
+- **Failed actions:** 110 trajectories contain a failed action the teacher recovered
+  from (57 malformed turns, 89 failed tool calls). No trajectory is dropped, and no
+  failed action is ever a training target.
+  - `clean` mode removes failed actions and their error feedback.
+  - `recovery` mode keeps the conversation as recorded, so the corrected turns that
+    follow are trained in the context of the failure.
 - **Checks:**
-  - Each prompt must be a prefix of the rendered conversation through that turn.
-  - Prompts must fit the 14,336-token student budget; the longest is 13,784.
-  - Prompt token counts match those recorded at inference: all 1,171 recovery
-    prompts, and the 196 clean-mode trajectories that needed no cleaning.
+  - Prompts fit the 14,336-token budget; the longest is 13,784.
+  - Prompt token counts match those recorded at inference (all 1,171 recovery prompts).
   - Every completion parses with the student's tool-call parser.
-- **Split:** about 10% of patients are a dev set for training loss: 1,098 train / 81
-  dev examples from 120 / 9 patients. The dataset's validation split stays reserved
-  for choosing settings by agent runs.
+- **Dev split:** about 10% of patients form a dev set for training loss. The dataset's
+  validation split stays reserved for choosing settings.
 
 | Variant | Folder under `outputs/sft-data/` | Train / dev examples | Recovery examples |
 | --- | --- | ---: | ---: |
 | Clean | `sonnet55-v6-20261116` | 1,098 / 81 | 0 |
 | Recovery | `sonnet55-v6-20261116-recovery` | 1,091 / 80 | 221 |
 
-Each folder holds `train.jsonl`, `dev.jsonl` and `sft-data.json` (provenance, mode,
-removal counts and token totals). Each training set is about 5.2M prompt tokens and
-173K completion tokens. Recovery examples are those whose prompt contains an earlier
-failure. Training on each variant gives a clean-versus-recovery ablation.
+Each training set is about 5.2M prompt tokens and 173K completion tokens.
 
 ## Scoring
 
-- **Answers:** compare structured outputs deterministically, matching coded concepts,
-  equivalent timestamps, supported unit aliases, and unordered lists with multiplicity.
-  Numeric tolerance is `0.000001` in requested units. Missing records and missing
-  values remain distinct.
-- **Evidence:** report required resource retrieval and citation coverage separately
-  from answer accuracy. Coverage alone does not prove a complete search or justified
-  absence claim; review transcripts before selecting SFT trajectories.
-- **Effort:** record tool calls, HTTP requests, input/output tokens, elapsed time,
-  and errors. Context, step, and token limits produce explicit failure statuses.
+- **Answers:** structured outputs are compared deterministically. Coded concepts match
+  by system and code, and timestamps, unit aliases and unordered lists are compared
+  with multiplicity. Numeric tolerance is `0.000001` in the requested units. Missing
+  records and missing values stay distinct.
+- **Evidence:** retrieval and citation of the required resources are reported
+  separately from accuracy. *Grounded* means correct with all required evidence
+  retrieved and cited.
+- **Effort:** tool calls, HTTP requests, input/output tokens, elapsed time and errors.
+  Context, step and token limits give explicit failure statuses.
+
+## Next steps
+
+1. **Spot-check the SFT data.** Read a few selected trajectories per family for invented
+   filters, wrong anchors and unsupported missing-record claims. Grounding is checked
+   automatically, but not search quality.
+2. **Prepare the training environment.**
+   - Run `scripts/prepare_model.sh`. The torch install in this clone's `.venv` was
+     broken and has been removed.
+   - Add PEFT and TRL (or an equivalent) to `requirements-model.txt`.
+   - Check disk space: the Qwen3-8B weights take about 16 GB, and the shared project
+     disk had about 36 GB free.
+3. **Write the training script (`sft/train.py`).**
+   - LoRA on Qwen3-8B in bf16, with completion-only loss.
+   - Gradient checkpointing, for prompts up to about 14K tokens on one 48 GB GPU.
+   - Track dev loss; launch through a Slurm script on the free `gpu` partition.
+   - Train one model on each data variant for a clean-versus-recovery ablation.
+4. **Extend the runner for evaluation (`student/run.py`).**
+   - Allow validation and test questions; it currently refuses anything outside
+     training.
+   - Load a LoRA adapter on top of the base model.
+   - Choose epochs, learning rate and variant on the validation split.
+5. **Run baselines on v6.**
+   - The zero-shot Qwen3-8B baseline on validation and test.
+   - Port the fixed TRIAGE-FHIR workflow onto the same environment and budgets.
+6. **Final test evaluation.** Freeze all settings first, then compare:
+   - accuracy, grounded accuracy and per-family (macro) accuracy
+   - tool calls and tokens, and effort by difficulty
+   - with patient-level bootstrap confidence intervals
+7. **Report.** State the limitations:
+   - synthetic data
+   - a partial corpus (318 of 899 training questions)
+   - the `followup_medication_comparison` issues
+   - teacher model identity taken from the requested model name, not a returned
+     fingerprint
+   - disclose the AI-generated trajectories
+
+   Optional: top up the thin families (about 50 questions, under one usage window).
 
 ## Repository layout
 
 ```text
 configs/       Synthea, cohort and HAPI settings; frozen question selections
-dataset/       Generation, answer rules, validation and live verification
+dataset/       Cohort generation, questions and answer rules, validation, live verification
 student/       Student environment: agent loop, FHIR tools, answer contracts, scoring, runner
-teacher/       Teacher trajectory generation, reports and corpus collection
+teacher/       Teacher trajectory generation, comparison reports, corpus collection
 sft/           Conversion of teacher trajectories into SFT examples
-scripts/       Preparation and Slurm launchers
-tests/         Dataset, FHIR, agent and teacher regression tests
-data/          Preserved raw cohort and processed dataset
-vendor/        Pinned artifacts and cached model
-outputs/       Run results, teacher batches and the trajectory corpus (not in Git)
-logs/          Slurm logs
+scripts/       Preparation scripts and Slurm launchers
+tests/         Offline regression tests (dataset, FHIR, student, teacher, SFT data)
+data/          Raw cohort and processed dataset (data files not in Git)
+vendor/        Pinned HAPI and Synthea artifacts and the cached model (not in Git)
+outputs/       Runs, teacher batches, trajectory corpus and SFT data (not in Git)
+logs/          Slurm logs (not in Git)
 ```
 
-Run offline checks:
+Run the offline tests from the repository root:
 
 ```bash
 python3 -m unittest discover -s tests -q
 ```
-
-Next steps: LoRA training on the SFT data with settings chosen on the validation split,
-the v6 zero-shot baseline, and a test-split comparison of fixed workflow, zero-shot and SFT.
