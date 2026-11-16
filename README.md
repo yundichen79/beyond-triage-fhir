@@ -22,11 +22,11 @@ the [teacher guide](teacher/README.md) for trajectory generation.
 | --- | --- | --- |
 | 1. Synthetic cohort and questions | `dataset/` | Done: 200 patients, 1,202 questions, validated and clinically reviewed |
 | 2. Live FHIR verification | `dataset/live.py` | Done: 200 patients / 1,202 answers recomputed through HTTP |
-| 3. Student environment | `student/` | Interface v6; used live in every teacher episode |
+| 3. Student environment | `student/` | Used live in every teacher episode |
 | 4. Teacher trajectories | `teacher/` | Done for now: Claude Sonnet 5.5 (high effort), 306 grounded trajectories for 318 of 899 training questions |
 | 5. SFT data | `sft/data.py` | Done: clean (1,179 examples) and recovery (1,171) variants |
 | 6. SFT training | `sft/train.py` | Ready: LoRA script, launcher and dry runs pass; GPU smoke test queued |
-| 7. Baselines and evaluation | `student/run.py` | Runner handles validation/test and LoRA adapters; v6 zero-shot on validation and test queued. Earlier zero-shot: training diagnostics only (v4/v5: 3 of 14 correct) |
+| 7. Baselines and evaluation | `student/run.py` | Runner handles validation/test and LoRA adapters; zero-shot on validation and test running |
 
 The [next steps](#next-steps) section lists what remains.
 
@@ -101,28 +101,20 @@ It can use:
 Ground truth never reaches the model. Episodes are limited to 24 turns, 48 tool calls
 and a 16,384-token transcript. Qwen3-8B uses native tool calling with thinking disabled.
 
-Interface history (each version changes what the model sees, so results from different
-versions are not directly comparable):
+What the interface enforces:
+- **Search validation:** invalid searches return corrective errors, not empty results:
+  wrong-resource statuses, contradictory filters, unsupported sort fields and
+  encounter references not yet seen. Answers must match the public schema before an
+  episode can finish.
+- **Repeated failures:** an identical failed action or empty search repeated without
+  new results gets a warning on the third occurrence and ends the episode on the
+  fourth.
+- **Compact results:** at most 20 resources per page. Results omit `subject`,
+  `DiagnosticReport.issued` and long result `display` strings, reduce status concepts
+  to bare codes, and drop `code.text` when it repeats a display. The answer schema
+  appears once, in the user message.
 
-- **v2:** explicit FHIR query syntax, corrective parameter errors, and answers
-  validated against a public structure.
-- **v3:** bare JSON tool calls accepted. Repeated identical failures warn on the third
-  occurrence and end the episode on the fourth.
-- **v4:** answer schema chosen from the question wording alone. Searches with
-  wrong-resource statuses, contradictory filters, unsupported sorts or unseen
-  encounters are rejected. 18 live query checks passed.
-- **v5:** a decimal `calculate` tool and revised retrieval instructions.
-- **v6 (current):** smaller tool results, so one search can no longer fill the student
-  context.
-  - Pages hold at most 20 resources.
-  - Results drop `subject`, `DiagnosticReport.issued` and long result `display` strings.
-  - Status concepts are reduced to bare codes, and `code.text` is dropped when it
-    repeats a display.
-  - The answer schema appears once, in the user message.
-
-  Every id and reference is kept, so scoring is unchanged. An offline test re-derives
-  all 14 families' answers from v6 results. The first turn shrank from 4,298 to 2,976
-  tokens on average.
+Every id and reference is kept, so scoring is unchanged.
 
 Running Qwen3-8B:
 
@@ -156,7 +148,7 @@ trajectory is already in the student's format.
 
 Details are in the [teacher guide](teacher/README.md).
 
-On the 28-question v6 selection (two per family), Claude Sonnet 5.5 at high effort
+On a 28-question selection (two per family), Claude Sonnet 5.5 at high effort
 answered 25 correctly with full evidence. The current corpus is
 `outputs/teacher-corpus/sonnet55-v6-20261116/`, built with `teacher.collect`:
 
@@ -263,7 +255,7 @@ tier).
    sbatch scripts/run_student.sbatch --split validation \
      --adapter outputs/sft-runs/recovery-r16-lr1e-4/epoch-2 --output outputs/sft-recovery-e2-validation.jsonl
    ```
-5. **Zero-shot baseline on v6** (queued). Qwen3-8B without an adapter, on the full
+5. **Zero-shot baseline** (running). Qwen3-8B without an adapter, on the full
    validation and test splits, writing to `outputs/zero-shot-v6-{validation,test}.jsonl`.
 6. **Fixed-workflow baseline.** Port the TRIAGE-FHIR workflow onto the same environment,
    tools and budgets.
