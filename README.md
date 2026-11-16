@@ -18,7 +18,8 @@ See the [question catalog](data/README.md) for dataset rules, fields, and exampl
 | Student interface | Version 6; used live in every teacher episode, live query check not yet rerun |
 | Zero-shot Qwen3-8B | Training diagnostics on v4/v5: 3/14 correct; not yet run on v6 |
 | Teacher trajectories | Claude Sonnet 5.5 (high effort): 306 grounded trajectories for 318 of 899 training questions; review pending |
-| SFT and comparative evaluation | Planned: SFT pipeline, fixed-workflow comparison and held-out evaluation outstanding |
+| SFT data | 1,179 per-turn examples from the 306 grounded trajectories (1,098 train / 81 dev) |
+| SFT training and evaluation | Planned: LoRA training, fixed-workflow comparison and held-out evaluation outstanding |
 
 ## Data source and dataset
 
@@ -182,6 +183,37 @@ though its label is rounded. And when there is no follow-up, its evidence rule s
 requires every inpatient order and Medication record. Both are left unchanged so the
 evaluated benchmark stays fixed.
 
+## SFT data
+
+`sft.data` converts the selected trajectories into training examples:
+
+```bash
+python3 -m sft.data --corpus outputs/teacher-corpus/sonnet55-v6-20261116 \
+  --output outputs/sft-data/sonnet55-v6-20261116
+```
+
+- **Cleaning:** failed actions retrieve nothing, so they are removed before
+  conversion: malformed turns with their format-error feedback, and failed tool calls
+  with their error results. Every remaining action and result is real. 110 of the
+  306 trajectories needed cleaning (57 malformed turns, 89 failed calls).
+- **Format:** one example per assistant turn. `prompt` is the exact text the student
+  sees before that turn: the pinned Qwen3-8B chat template with
+  `add_generation_prompt=True` and `enable_thinking=False`. `completion` is the turn in
+  Qwen's native `<tool_call>` format, ending with `<|im_end|>`. Train with loss on the
+  completion only.
+- **Checks:**
+  - Each prompt must be a prefix of the rendered conversation through that turn.
+  - Prompts must fit the 14,336-token student budget; the longest is 13,784.
+  - For all 196 trajectories that needed no cleaning, prompt token counts are
+    identical to those recorded at inference.
+  - Every completion parses with the student's tool-call parser.
+- **Split:** about 10% of patients are a dev set for training loss: 1,098 train / 81
+  dev examples from 120 / 9 patients. The dataset's validation split stays reserved
+  for choosing settings by agent runs.
+
+Output: `train.jsonl`, `dev.jsonl` and `sft-data.json` (provenance, cleaning counts and
+token totals). The training set is 5.2M prompt tokens and 174K completion tokens.
+
 ## Scoring
 
 - **Answers:** compare structured outputs deterministically, matching coded concepts,
@@ -201,6 +233,7 @@ configs/       Synthea, cohort and HAPI settings; frozen question selections
 dataset/       Generation, answer rules, validation and live verification
 student/       Student environment: agent loop, FHIR tools, answer contracts, scoring, runner
 teacher/       Teacher trajectory generation, reports and corpus collection
+sft/           Conversion of teacher trajectories into SFT examples
 scripts/       Preparation and Slurm launchers
 tests/         Dataset, FHIR, agent and teacher regression tests
 data/          Preserved raw cohort and processed dataset
@@ -215,6 +248,5 @@ Run offline checks:
 python3 -m unittest discover -s tests -q
 ```
 
-Next steps: review a sample of selected trajectories, build the SFT pipeline (convert
-the corpus to Qwen's chat format, LoRA training, settings chosen on validation), run the
-v6 zero-shot baseline, and compare fixed workflow, zero-shot and SFT on the test split.
+Next steps: LoRA training on the SFT data with settings chosen on the validation split,
+the v6 zero-shot baseline, and a test-split comparison of fixed workflow, zero-shot and SFT.
