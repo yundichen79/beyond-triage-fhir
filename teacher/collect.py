@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from dataset.common import file_digest
+from dataset.questions import negative
 from teacher.bridge import atomic_json
 from teacher.prepare import ROOT, opaque_id
 from teacher.report import teacher_usage
@@ -62,7 +63,7 @@ def collect(runs, dataset, output):
             usage, _ = teacher_usage(attempt)
             records.append({
                 'episode_id': provenance['episode_id'], 'dataset_id': row['id'], 'family': row['family'],
-                'complexity': row.get('complexity'), 'negative_case': bool(row.get('negative')),
+                'complexity': row.get('complexity'), 'negative_case': negative(row['ground_truth_answer'], row['family']),
                 'question': row['question'], 'patient_id': row['patient_id'],
                 'answer_contract': trajectory.get('answer_contract'), 'status': trajectory['status'],
                 'grounded': bool(scores['answer_correct_with_evidence']), 'scores': scores,
