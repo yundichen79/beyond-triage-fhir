@@ -62,9 +62,11 @@ class CollectTests(unittest.TestCase):
         self.assertFalse(any(r['approved_for_sft'] for r in records))
         text = (self.base / 'corpus/trajectories.jsonl').read_text()
         self.assertNotIn('ground_truth', text)
-        manifest = json.loads((self.base / 'corpus/manifest.json').read_text())
-        self.assertEqual(manifest['student_interface_sha256'], INTERFACE)
-        self.assertEqual(manifest['system_prompt'], 'shared')
+        corpus = json.loads((self.base / 'corpus/corpus.json').read_text())
+        self.assertEqual(corpus['student_interface_sha256'], INTERFACE)
+        self.assertEqual(corpus['system_prompt'], 'shared')
+        self.assertEqual(corpus['summary'], summary)
+        self.assertEqual(sorted(p.name for p in (self.base / 'corpus').iterdir()), ['corpus.json', 'trajectories.jsonl'])
 
     def test_refuses_mixed_interfaces_or_datasets_and_existing_output(self):
         a = self.rows[0]

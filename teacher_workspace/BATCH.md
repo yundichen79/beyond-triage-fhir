@@ -1,8 +1,5 @@
 # Generate trajectories for the training dataset
 
-Latest restart: see [RESUME_STATUS.md](RESUME_STATUS.md) for job `33467807`,
-the usage-limit interruption, and the runtime-error resume fix.
-
 The one-question interactive session was a pilot. The batch runner covers **all
 899 training questions**, using a fresh `codex exec` process for each question.
 One conversation must not solve the whole dataset: later questions would inherit

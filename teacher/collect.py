@@ -104,13 +104,14 @@ def collect(runs, dataset, output):
     with (output / 'trajectories.jsonl').open('x') as handle:
         for record in sorted(records, key=lambda r: (r['episode_id'], r['source'])):
             handle.write(json.dumps(record, ensure_ascii=False) + '\n')
-    atomic_json(output / 'manifest.json', {
+    # One metadata file: what the student sees (needed to build SFT examples) plus counts.
+    atomic_json(output / 'corpus.json', {
         'dataset_sha256': dataset_hash, 'runs': [str(run) for run in runs],
         'student_interface_sha256': interface, 'system_prompt': shared['system_prompt'] if shared else None,
         'tools': shared['tools'] if shared else None,
         'selection_policy': 'Per question: shortest grounded attempt (fewest tool calls, then fewest turns).',
-        'review_required': 'Check anchors, unsupported filters and absence claims before SFT.'})
-    atomic_json(output / 'summary.json', summary)
+        'review_required': 'Check anchors, unsupported filters and absence claims before SFT.',
+        'summary': summary})
     return summary
 
 
