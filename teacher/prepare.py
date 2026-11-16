@@ -57,7 +57,7 @@ def prepare(dataset, output):
         write_json(output / 'episodes' / (packet['episode_id'] + '.json'), packet)
     write_json(output / 'index.json', {'interface_version': INTERFACE_VERSION,
                                      'episode_ids': sorted(ids), 'count': len(ids)})
-    shutil.copyfile(ROOT / 'teacher_workspace/TEACHER.md', output / 'TEACHER.md')
+    shutil.copyfile(ROOT / 'teacher/TEACHER.md', output / 'TEACHER.md')
     print(f'Exported {len(packets)} training-only public packets to {output}')
     return packets
 
@@ -65,7 +65,7 @@ def prepare(dataset, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', type=Path, default=ROOT / 'data/processed/cohort-200')
-    parser.add_argument('--output', type=Path, default=ROOT / 'teacher_workspace/public')
+    parser.add_argument('--output', type=Path, default=ROOT / 'outputs/teacher-public')
     args = parser.parse_args()
     prepare(args.dataset, args.output)
 

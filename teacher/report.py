@@ -115,7 +115,7 @@ def report(output, baseline=None):
     comparability = {'student_settings_equal': previous['settings'] == manifest['settings'],
         'code_equal': {name: previous['code_sha256'].get(name) == manifest['code_sha256'].get(name)
             for name in ('pilot/agent.py', 'pilot/tools.py', 'pilot/contract.py',
-                         'teacher/bridge.py', 'teacher/client.py', 'teacher_workspace/TEACHER.md')}}
+                         'teacher/bridge.py', 'teacher/client.py', 'teacher/TEACHER.md')}}
     records = {}
     old_records = {}
     questions = selection['questions']

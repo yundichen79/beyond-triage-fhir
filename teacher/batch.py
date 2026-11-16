@@ -107,7 +107,7 @@ def limit_wait(limit, elapsed, now, max_run_seconds, episode_timeout, retries):
 
 
 def teacher_instructions():
-    return (ROOT / 'teacher_workspace/TEACHER.md').read_text()
+    return (ROOT / 'teacher/TEACHER.md').read_text()
 
 
 def teacher_prompt():
@@ -424,7 +424,7 @@ def main():
         'max_run_seconds': args.max_run_seconds,
         'code_sha256': {str(p.relative_to(ROOT)): file_digest(p) for p in
             [ROOT / name for name in ('teacher/batch.py', 'teacher/bridge.py', 'teacher/client.py',
-                                     'teacher_workspace/TEACHER.md',
+                                     'teacher/TEACHER.md',
                                      'pilot/agent.py', 'pilot/tools.py', 'pilot/contract.py')]}})
 
     def after_verify(client, selected_rows, snapshot):

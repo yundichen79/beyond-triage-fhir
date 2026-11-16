@@ -30,7 +30,7 @@ Run only after approval for the CPU allocation and Codex account usage:
 
 ```bash
 sbatch scripts/run_teacher_batch.sbatch \
-  --sessions teacher_workspace/batches/batch-001 \
+  --sessions outputs/teacher-sessions/batch-001 \
   --output outputs/teacher-batches/batch-001 \
   --resume-from outputs/teacher/4d772a3230da8ecc5ad9bc61-attempt1
 ```
@@ -60,7 +60,7 @@ whose recorded attempts should be skipped:
 
 ```bash
 sbatch scripts/run_teacher_batch.sbatch \
-  --sessions teacher_workspace/batches/batch-002 \
+  --sessions outputs/teacher-sessions/batch-002 \
   --output outputs/teacher-batches/batch-002 \
   --resume-from outputs/teacher/4d772a3230da8ecc5ad9bc61-attempt1 \
   --resume-from outputs/teacher-batches/batch-001
@@ -123,8 +123,8 @@ Codex profile uses. Events go to `attempts/<id>/claude-events.jsonl`.
 ```sh
 sbatch --parsable scripts/run_teacher_batch.sbatch \
   --teacher claude --teacher-model claude-sonnet-5-5 --reasoning-effort high \
-  --selection teacher_workspace/selections/sol61-high-28-v1.json \
-  --sessions teacher_workspace/batches/sonnet55-high-28-v1 \
+  --selection configs/selections/sol61-high-28-v1.json \
+  --sessions outputs/teacher-sessions/sonnet55-high-28-v1 \
   --output outputs/teacher-batches/sonnet55-high-28-v1
 python3 -m teacher.report --output outputs/teacher-batches/sonnet55-high-28-v1 \
   --baseline outputs/teacher-batches/sol61-high-28-v1
