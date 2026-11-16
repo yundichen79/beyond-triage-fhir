@@ -195,6 +195,43 @@ python3 -m sft.data --corpus outputs/teacher-corpus/sonnet55-v6-20261116 \
 
 Each training set is about 5.2M prompt tokens and 173K completion tokens.
 
+### What the training examples teach
+
+Example trajectory (outpatient blood pressure, three assistant turns, so three
+training examples):
+- **Turn 0:** search the five most recent finished ambulatory encounters and the five
+  latest final blood-pressure panels.
+- **Turn 1:** search for observations linked to each of the two most recent encounters
+  returned. Both searches come back empty.
+- **Turn 2:** fall back to the latest encounter that has a linked blood-pressure panel,
+  and `finish` with systolic 119 and diastolic 84 mmHg, citing the retrieved encounter
+  and observation.
+
+What the model writes is what it is trained on: the loss covers only the completions.
+In each completion it learns:
+
+1. **Which tool to call:** search, read, page, calculate or finish.
+2. **What to ask for.** The arguments carry most of the strategy:
+   - which resource type (Encounter, Observation, DiagnosticReport, …)
+   - which code (blood-pressure panel `85354-9`, CBC `58410-2`)
+   - which filters: `status=final,amended,corrected`, the date cutoff taken from the
+     question, `class=AMB`
+   - which sort order and page size (`_sort=-date`, `count=5`)
+3. **Which IDs to follow.** In the example, turn 1 searches by two encounter IDs that
+   appeared in the turn 0 results. The model learns to pull the right IDs out of what
+   came back.
+4. **What to do next given the results.** When those searches came back empty, the next
+   step was not to give up or claim "no record", but to fall back to the older encounter
+   that did qualify.
+5. **The final answer.** The values in `finish` (systolic 119, diastolic 84, the
+   timestamps) are copied from the tool results, in the schema's format. The citations
+   name records that were actually retrieved.
+
+What the model reads, the `<tool_response>` blocks, is input only; the model is never
+trained to produce tool results, so it does not learn to invent them. Because the
+correct next step depends on those results, training on the completions still teaches
+it to read them.
+
 ## SFT training
 
 `sft/train.py` fine-tunes Qwen3-8B with LoRA on one data variant:
