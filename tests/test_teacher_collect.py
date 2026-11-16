@@ -10,7 +10,7 @@ from teacher.collect import collect
 from teacher.prepare import opaque_id
 from test_teacher_batch import row
 
-INTERFACE = {'pilot/agent.py': 'a', 'pilot/tools.py': 't', 'pilot/contract.py': 'c'}
+INTERFACE = {'student/agent.py': 'a', 'student/tools.py': 't', 'student/contract.py': 'c'}
 
 
 def write(path, value):
@@ -68,10 +68,20 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(corpus['summary'], summary)
         self.assertEqual(sorted(p.name for p in (self.base / 'corpus').iterdir()), ['corpus.json', 'trajectories.jsonl'])
 
+    def test_runs_recorded_before_the_rename_match_new_paths(self):
+        a = self.rows[0]
+        old = {name.replace('student/', 'pilot/'): value for name, value in INTERFACE.items()}
+        first = self.run_dir('old', [('a', a, 'completed', True, 3)], old)
+        second = self.run_dir('new', [('a', a, 'completed', True, 2)])
+        summary = collect([first, second], self.dataset, self.base / 'corpus')
+        self.assertEqual(summary['finished_attempts'], 2)
+        corpus = json.loads((self.base / 'corpus/corpus.json').read_text())
+        self.assertEqual(corpus['student_interface_sha256'], INTERFACE)
+
     def test_refuses_mixed_interfaces_or_datasets_and_existing_output(self):
         a = self.rows[0]
         first = self.run_dir('run1', [('a', a, 'completed', True, 3)])
-        other_interface = self.run_dir('run2', [('a', a, 'completed', True, 3)], dict(INTERFACE, **{'pilot/tools.py': 'v5'}))
+        other_interface = self.run_dir('run2', [('a', a, 'completed', True, 3)], dict(INTERFACE, **{'student/tools.py': 'v5'}))
         other_dataset = self.run_dir('run3', [('a', a, 'completed', True, 3)], dataset_hash='different')
         with self.assertRaisesRegex(ValueError, 'interface'):
             collect([first, other_interface], self.dataset, self.base / 'mixed')

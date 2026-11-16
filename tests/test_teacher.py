@@ -11,11 +11,11 @@ import unittest
 import subprocess
 import sys
 
-from pilot.agent import SYSTEM_PROMPT, Settings, parse_calls, run_agent
+from student.agent import SYSTEM_PROMPT, Settings, parse_calls, run_agent
 from teacher.bridge import FileTeacher, atomic_json
 from teacher.client import action_text, render, respond, show, wait_for_turn
 from teacher.prepare import public_episode
-from test_pilot import CBC_QUESTION, fake_client
+from test_student import CBC_QUESTION, fake_client
 
 
 class TinyTokenizer:

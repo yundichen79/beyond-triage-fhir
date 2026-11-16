@@ -6,7 +6,7 @@ from pathlib import Path
 import time
 import uuid
 
-from pilot.agent import ContextLimit, Generation
+from student.agent import ContextLimit, Generation
 
 
 def atomic_json(path, value):

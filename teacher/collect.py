@@ -16,10 +16,10 @@ from dataset.common import file_digest
 from dataset.questions import negative
 from teacher.bridge import atomic_json
 from teacher.prepare import ROOT, opaque_id
-from teacher.report import teacher_usage
+from teacher.report import code_hash, teacher_usage
 
 # Files that define what the student sees; runs that differ here are not combined.
-INTERFACE_FILES = ('pilot/agent.py', 'pilot/tools.py', 'pilot/contract.py')
+INTERFACE_FILES = ('student/agent.py', 'student/tools.py', 'student/contract.py')
 
 
 def load_run(run):
@@ -42,7 +42,7 @@ def collect(runs, dataset, output):
         manifest = json.loads((run / 'batch.json').read_text())
         if manifest['dataset_sha256'] != dataset_hash:
             raise ValueError(f'{run} used a different dataset')
-        hashes = {name: manifest['code_sha256'].get(name) for name in INTERFACE_FILES}
+        hashes = {name: code_hash(manifest, name) for name in INTERFACE_FILES}
         if interface is None:
             interface = hashes
         elif hashes != interface:

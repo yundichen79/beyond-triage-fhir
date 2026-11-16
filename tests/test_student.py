@@ -16,11 +16,11 @@ from dataset.fhir import FHIR
 from dataset.live import run_job
 from dataset.oracle import evaluate
 from dataset.questions import build_questions, negative
-from pilot.agent import ContextLimit, Generation, Settings, SYSTEM_PROMPT, parse_calls, run_agent
-from pilot.run import execute_pilot, select_questions, selection_summary, summarize
-from pilot.scoring import equal, score_episode
-from pilot.tools import FIELDS, MAX_COUNT, PatientTools, TOOL_DEFINITIONS, projection, tool_definitions
-from pilot.contract import answer_error, INTERFACE_VERSION, contract_for_question, json_schema
+from student.agent import ContextLimit, Generation, Settings, SYSTEM_PROMPT, parse_calls, run_agent
+from student.run import execute_run, select_questions, selection_summary, summarize
+from student.scoring import equal, score_episode
+from student.tools import FIELDS, MAX_COUNT, PatientTools, TOOL_DEFINITIONS, projection, tool_definitions
+from student.contract import answer_error, INTERFACE_VERSION, contract_for_question, json_schema
 from test_dataset import fixture, config, observation
 from fhir_fixture import search as fixture_search
 
@@ -384,7 +384,7 @@ class AgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with self.assertRaisesRegex(ValueError, "Unsupported or ambiguous"):
-                execute_pilot([{"id": "unknown", "split": "train", "question": "Unrecognized question"}],
+                execute_run([{"id": "unknown", "split": "train", "question": "Unrecognized question"}],
                               client, model, Settings(), root / "output.jsonl", root)
             self.assertFalse((root / "output.jsonl").exists())
 
@@ -599,8 +599,8 @@ class AgentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_questions(root / "questions.jsonl", [row])
-            output = root / "output/pilot.jsonl"
-            summary = execute_pilot([row], fake_client(), model, Settings(), output, root)
+            output = root / "output/zero-shot.jsonl"
+            summary = execute_run([row], fake_client(), model, Settings(), output, root)
             self.assertTrue(summary["complete"])
             self.assertEqual(summary["overall"]["correct_with_evidence"], 1)
             self.assertEqual(list(output.parent.iterdir()), [output])
@@ -608,7 +608,7 @@ class AgentTests(unittest.TestCase):
             self.assertEqual([r["type"] for r in records], ["run", "example", "summary"])
             self.assertEqual(records[0]["system_prompt"], SYSTEM_PROMPT)
             self.assertEqual(records[0]["interface_version"], INTERFACE_VERSION)
-            self.assertIn("pilot/contract.py", records[0]["code_sha256"])
+            self.assertIn("student/contract.py", records[0]["code_sha256"])
             contract = records[0]["public_answer_contracts"]["ID_SECRET_SENTINEL"]
             self.assertEqual(contract["name"], "Latest CBC")
             self.assertIn("Answer JSON Schema:\n" + canonical(contract["schema"]), model.inputs[0][0][1]["content"])
@@ -618,11 +618,11 @@ class AgentTests(unittest.TestCase):
                 self.assertNotIn(hidden, first_prompt)
             before = output.read_bytes()
             with self.assertRaises(FileExistsError):
-                execute_pilot([row], fake_client(), model, Settings(), output, root)
+                execute_run([row], fake_client(), model, Settings(), output, root)
             self.assertEqual(output.read_bytes(), before)
             row["split"] = "test"
             with self.assertRaisesRegex(ValueError, "training"):
-                execute_pilot([row], fake_client(), model, Settings(), root / "other.jsonl", root)
+                execute_run([row], fake_client(), model, Settings(), root / "other.jsonl", root)
 
 
 class ScoringAndSelectionTests(unittest.TestCase):
@@ -690,7 +690,7 @@ class ScoringAndSelectionTests(unittest.TestCase):
                 process.terminate.assert_not_called()
                 self.assertEqual(selected, rows)
                 self.assertIs(source, snapshot)
-                raise ValueError("pilot callback failed")
+                raise ValueError("agent callback failed")
             with patch("dataset.live.artifact_info", return_value=(root / "main.war", artifact)), \
                  patch("dataset.live.shutil.which", return_value="/mock/bin"), \
                  patch("dataset.live.subprocess.run", return_value=result) as commands, \
@@ -702,7 +702,7 @@ class ScoringAndSelectionTests(unittest.TestCase):
                  patch("dataset.live.wait_ready", return_value={"resourceType": "CapabilityStatement"}), \
                  patch("dataset.live.import_snapshot"), \
                  patch("dataset.live.verify_dataset", return_value=report):
-                with self.assertRaisesRegex(ValueError, "pilot callback failed"):
+                with self.assertRaisesRegex(ValueError, "agent callback failed"):
                     run_job(args, rows=rows, after_verify=callback)
             process.terminate.assert_called_once()
             self.assertTrue(any(c.args[0][0] == "pg_ctl" and c.args[0][-1] == "stop" for c in commands.call_args_list))

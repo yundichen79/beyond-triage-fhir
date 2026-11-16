@@ -8,8 +8,8 @@ import re
 import time
 
 from dataset.common import canonical
-from pilot.tools import PatientTools, tool_definitions as shared_tool_definitions
-from pilot.contract import answer_error, contract_for_question, json_schema
+from student.tools import PatientTools, tool_definitions as shared_tool_definitions
+from student.contract import answer_error, contract_for_question, json_schema
 
 
 MODEL_ID = "Qwen/Qwen3-8B"
@@ -134,9 +134,9 @@ class TransformersModel:
             import transformers
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:
-            raise ValueError("Pilot dependencies are missing; run bash scripts/prepare_pilot.sh") from exc
+            raise ValueError("Model dependencies are missing; run bash scripts/prepare_model.sh") from exc
         if not torch.cuda.is_available():
-            raise ValueError("The pilot requires a GPU allocation; use scripts/run_pilot.sbatch")
+            raise ValueError("Running the student model requires a GPU allocation; use scripts/run_student.sbatch")
         self.settings, self.torch, self.transformers = settings, torch, transformers
         source = str(model_path) if model_path else MODEL_ID
         kwargs = {"local_files_only": True, "trust_remote_code": False}
@@ -147,7 +147,7 @@ class TransformersModel:
             self.model = AutoModelForCausalLM.from_pretrained(
                 source, torch_dtype=torch.bfloat16, device_map={"": "cuda:0"}, **kwargs).eval()
         except OSError as exc:
-            raise ValueError("Prepared model checkpoint is unavailable; run bash scripts/prepare_pilot.sh") from exc
+            raise ValueError("Prepared model checkpoint is unavailable; run bash scripts/prepare_model.sh") from exc
         self.metadata = {"model": source, "revision": getattr(self.model.config, "_commit_hash", None)
                          or (MODEL_REVISION if not model_path else None), "thinking": False,
                          "torch": torch.__version__, "transformers": transformers.__version__,

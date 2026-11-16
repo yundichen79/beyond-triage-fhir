@@ -10,14 +10,14 @@ from unittest.mock import patch
 
 from dataset.common import Snapshot, digest
 from dataset.oracle import evaluate
-from pilot.agent import Settings
+from student.agent import Settings
 from teacher.batch import (CodexDriver, MAX_LIMIT_RETRIES, abandoned_episode, RESET_MARGIN_SECONDS, attempt, limit_wait, usage_limit, claude_command, claude_environment, codex_command,
                            codex_environment, require_chatgpt_login, require_claude_login,
                            select_rows, selected_manifest_rows)
 from teacher.client import respond, show
 from teacher.prepare import opaque_id
 from test_dataset import fixture
-from test_pilot import CBC_QUESTION, fake_client
+from test_student import CBC_QUESTION, fake_client
 from test_teacher import TinyTokenizer
 
 

@@ -13,10 +13,12 @@ See the [question catalog](data/README.md) for dataset rules, fields, and exampl
 
 | Component | Status |
 | --- | --- |
-| Dataset | Built; local validation, source replay, and clinical review passed |
-| Live FHIR verification | Passed for 200 patients / 1,202 questions; v4 query smoke checks passed 18/18 |
-| Zero-shot pilot | V4 training diagnostic: 3/14 correct, 2/14 correct with required evidence; v5 implemented, model evaluation pending |
-| SFT and comparative evaluation | Planned; fixed-workflow comparison, SFT, and held-out evaluation outstanding |
+| Dataset | Built; local validation, source replay and clinical review passed |
+| Live FHIR verification | Passed for 200 patients / 1,202 questions; v4 query checks passed 18/18 |
+| Student interface | Version 6; used live in every teacher episode, live query check not yet rerun |
+| Zero-shot Qwen3-8B | Training diagnostics on v4/v5: 3/14 correct; not yet run on v6 |
+| Teacher trajectories | Claude Sonnet 5.5 (high effort): 306 grounded trajectories for 318 of 899 training questions; review pending |
+| SFT and comparative evaluation | Planned: SFT pipeline, fixed-workflow comparison and held-out evaluation outstanding |
 
 ## Data source and dataset
 
@@ -86,66 +88,33 @@ complete charts, check pagination, and recompute answers through HTTP. Failed
 requests remain errors. Indexes, servers, and operational artifacts are temporary;
 logs remain in `logs/`.
 
-## Zero-shot pilot
+## Student environment and zero-shot runs
 
-The pilot selects **56 training questions from 44 patients**: four per family,
-including eight missing-record cases. Validation and test data are reserved;
-this pilot checks agent behavior rather than estimating held-out performance.
+The `student/` package is the environment every model answers in: the zero-shot
+Qwen3-8B baseline, the teacher that generates SFT trajectories, and the fine-tuned
+student. Qwen3-8B uses native tool calling with thinking disabled. Its input is the
+question, the patient reference, shared instructions, and a question-specific public
+answer schema. Tools provide patient-scoped search, reference reads, pagination, a
+decimal calculator and answer submission. Ground truth stays outside the model.
 
-Qwen3-8B uses native tool calling with thinking disabled. Inputs contain the question,
-patient reference, shared instructions, and a question-specific public answer schema. Tools provide patient-scoped
-search, reference reads, pagination, and answer submission. Ground truth stays outside
-the model.
+The zero-shot runner (`student.run`) selects **56 training questions from 44
+patients**, four per family including eight missing-record cases. Validation and test
+data are reserved, so these runs check agent behavior and do not estimate held-out
+performance.
 
-Interface version 2 adds explicit FHIR query syntax and corrective parameter
-errors. Submitted answers must match a public task structure before an episode
-can finish; every episode uses the same validator without evaluator labels.
-This checks formatting, not clinical correctness or search completeness. New run
-headers record the interface version and validator checksum; preserve older
-results and use a distinct `--output` path when comparing versions.
+Interface history (each version changes what the model sees, so results from
+different versions are not directly comparable):
 
-Interface version 3 also accepts a valid bare JSON tool call with `name` and
-`arguments`, removes nearest-task guesses from schema feedback, and clarifies
-report effective times and requested rounding. An identical failed action or
-empty search triggers a warning on its third occurrence and ends the episode
-with `repeated_failure` on its fourth occurrence without new retrieved resources.
-Retrieving a new resource resets these counters. Valid nonempty repeated reads
-do not trigger this guard. These are interface changes; answer scoring is unchanged.
-
-Interface version 4 selects one public answer structure using only the visible
-question wording, places its JSON Schema in the user message and `finish` tool,
-and validates submissions against that structure. Unknown question wording fails
-before GPU loading rather than falling back to any of the fourteen task shapes.
-No family labels, ground truth, evidence IDs, or oracle metadata select the schema.
-Headers store each selected contract and the policy for reconstructing its tool definition.
-
-Search validation now rejects wrong-resource status values, contradictory repeated
-status constraints, sort fields outside the supported resource-specific subset,
-and encounter references not yet observed in tool results. Invalid queries produce
-errors, not empty successful searches. Legitimate queries with no matches still
-return empty results; these alone do not justify chart-wide absence claims.
-The offline fixture transport now applies supported code, date, status, class,
-reference and sort filters, and rejects unsupported fixture behavior instead of
-silently ignoring it. This transport is not a replacement for live HAPI testing.
-
-V4 passed 18 live query smoke checks and its 14-question training diagnostic
-completed with 3 correct answers and 2 correct with required evidence. These are
-development results, not held-out evaluation.
-
-Interface version 5 adds a decimal `calculate` tool for later-minus-earlier
-differences with explicit half-even rounding. It takes only agent-supplied numeric
-strings, makes no HTTP requests, and counts against the same total tool budget.
-Tool-call totals now include computation as well as retrieval; report this change
-when comparing with older interfaces. It does not automatically alter final answers.
-Contradictory AND filters on single-valued encounter/class fields now return
-actionable errors rather than successful empty searches; OR remains explicit.
-Shared instructions emphasize full-history temporal anchors, qualifying encounters,
-targeted retrieval, explicit indication links, rounding, and anchor citations.
-No ground-truth labels or resource IDs are exposed, and scoring is unchanged.
-
-V5 is covered by offline regression tests only; its effect on model accuracy is
-unmeasured. Use a fresh output path for evaluation and provide the same interface
-to comparison systems. V4 artifacts remain historical evidence of v4 behavior.
+- **v2:** explicit FHIR query syntax, corrective parameter errors, and answers
+  validated against a public task structure before an episode can finish.
+- **v3:** bare JSON tool calls accepted; repeated identical failures or empty searches
+  warn on the third occurrence and end the episode (`repeated_failure`) on the fourth.
+- **v4:** one public answer schema chosen from the question wording alone; search
+  validation rejects wrong-resource statuses, contradictory filters, unsupported sort
+  fields and unseen encounter references. 18 live query checks passed; the 14-question
+  training diagnostic got 3 correct.
+- **v5:** a decimal `calculate` tool (later minus earlier, half-even rounding) and
+  revised retrieval instructions. Its 14-question training diagnostic got 3 grounded.
 
 Interface version 6 makes tool results smaller so a single search no longer fills the
 16K-token student context, which caused most teacher `context_limit` failures:
@@ -168,29 +137,50 @@ projected resources shrink by 19–40% depending on type. V6 changes what the mo
 so trajectories and zero-shot results from v5 and v6 are not directly comparable.
 
 ```bash
-python3 -m pilot.run plan        # Preview selection without a model download
-bash scripts/prepare_pilot.sh   # Install dependencies and cache the pinned model
+python3 -m student.run plan        # Preview the selection without a model download
+bash scripts/prepare_model.sh      # Install dependencies and cache the pinned model
+sbatch scripts/run_student.sbatch  # GPU run after live verification passes
+python3 -m student.run summarize   # After the job finishes
 ```
 
-After live verification passes, submit the GPU run:
+The launcher requests one L40S GPU, eight CPU cores and 64 GB host memory. It starts
+isolated FHIR servers and verifies the selected charts before answering. Pinned
+dependencies are in [requirements-model.txt](requirements-model.txt). Results go to
+`outputs/zero-shot.jsonl` (run settings, transcripts, answers, scores and a summary)
+and logs to `logs/student-<job-id>.log`. Use `--output` for a new file, or `--replace`
+to overwrite an existing one. `sbatch scripts/verify_student_queries.sbatch` reruns the
+live query checks.
 
-```bash
-sbatch scripts/run_pilot.sbatch
-```
+## Teacher trajectories
 
-The launcher requests one L40S GPU, eight CPU cores, and 64 GB host memory. It
-starts isolated FHIR servers and verifies selected charts before answering.
-See [requirements-pilot.txt](requirements-pilot.txt) for pinned dependencies.
+A teacher model solves training questions through the same student environment, so
+every trajectory is already in the student's format. Each question runs in a fresh
+Claude Code process (`claude -p`) on a subscription login; API-key billing is refused.
+The process gets `teacher/TEACHER.md` as its system prompt and only one allowed
+command, `teacher_client.py`. Answers are scored privately after each episode. See
+[teacher/README.md](teacher/README.md) for launching, usage limits and resuming.
 
-One experiment file, **`outputs/pilot.jsonl`**, contains run settings, episode
-transcripts, answers, scores, and a summary. Logs go to `logs/pilot-<job-id>.log`.
-After the job finishes:
+On the 28-question v6 selection (two per family), Claude Sonnet 5.5 at high effort
+answered 25 correctly with full evidence. The current corpus is in
+`outputs/teacher-corpus/sonnet55-v6-20261116/`:
 
-```bash
-python3 -m pilot.run summarize
-```
+| | |
+| --- | --- |
+| Training questions with a finished attempt | 318 of 899 |
+| Grounded trajectories (`selected`) | 306, including 28 missing-record cases |
+| Difficulty of selected (simple / intermediate / complex) | 142 / 126 / 38 |
+| Mean tool calls per selected trajectory | 3.9 |
 
-Add `--replace` to intentionally replace an existing pilot result.
+`teacher.collect` builds the corpus from batch runs with identical student-interface
+code. It marks the shortest grounded attempt per question and leaves out hidden
+labels. Selected trajectories still need review of anchors, filters and absence
+claims before SFT.
+
+**Known limitation:** `followup_medication_comparison` contributes only one trajectory.
+Its question text does not ask for the elapsed days to be rounded to one decimal,
+though its label is rounded. And when there is no follow-up, its evidence rule still
+requires every inpatient order and Medication record. Both are left unchanged so the
+evaluated benchmark stays fixed.
 
 ## Scoring
 
@@ -207,14 +197,15 @@ Add `--replace` to intentionally replace an existing pilot result.
 ## Repository layout
 
 ```text
-configs/       Synthea, cohort, and HAPI settings
-dataset/       Generation, answer rules, validation, and live verification
-pilot/         Agent loop, FHIR tools, scoring, and runner
+configs/       Synthea, cohort and HAPI settings; frozen question selections
+dataset/       Generation, answer rules, validation and live verification
+student/       Student environment: agent loop, FHIR tools, answer contracts, scoring, runner
+teacher/       Teacher trajectory generation, reports and corpus collection
 scripts/       Preparation and Slurm launchers
-tests/         Dataset, FHIR, and agent regression tests
+tests/         Dataset, FHIR, agent and teacher regression tests
 data/          Preserved raw cohort and processed dataset
 vendor/        Pinned artifacts and cached model
-outputs/       Current pilot result
+outputs/       Run results, teacher batches and the trajectory corpus (not in Git)
 logs/          Slurm logs
 ```
 
@@ -224,5 +215,6 @@ Run offline checks:
 python3 -m unittest discover -s tests -q
 ```
 
-Next steps: confirm live retrieval, inspect real pilot trajectories, then collect
-correct, efficient trajectories for SFT and expand the cohort for evaluation.
+Next steps: review a sample of selected trajectories, build the SFT pipeline (convert
+the corpus to Qwen's chat format, LoRA training, settings chosen on validation), run the
+v6 zero-shot baseline, and compare fixed workflow, zero-shot and SFT on the test split.

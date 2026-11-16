@@ -9,4 +9,4 @@
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:?Submit with sbatch from the repository root}"
 module load Java/21 PostgreSQL/16.4-GCCcore-13.3.0
-exec python3 -u -m pilot.smoke "$@"
+exec python3 -u -m student.smoke "$@"

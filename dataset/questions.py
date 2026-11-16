@@ -105,6 +105,7 @@ def negative(answer, family):
 
 
 def build_questions(snapshot, config, max_patients=None):
+    # The seed string is kept verbatim: changing it would reassign patients to splits.
     patients = sorted(snapshot.patients, key=lambda p: digest([config["split_seed"], "pilot", p]))
     if max_patients is not None:
         patients = patients[:max_patients]

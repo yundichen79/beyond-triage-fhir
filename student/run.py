@@ -1,4 +1,4 @@
-"""Plan, prepare, run, and summarize one zero-shot training-question pilot."""
+"""Plan, prepare, run and summarize a zero-shot run of the student model on training questions."""
 
 import argparse
 from collections import Counter, defaultdict
@@ -13,10 +13,10 @@ from types import SimpleNamespace
 from dataset.common import canonical, digest, file_digest, read_questions
 from dataset.live import interrupt_cleanup, run_job, verification_output
 from dataset.questions import FAMILIES, negative
-from pilot.agent import MODEL_CACHE, MODEL_ID, MODEL_REVISION, SYSTEM_PROMPT, Settings, TransformersModel, run_agent
-from pilot.scoring import score_episode
-from pilot.tools import TOOL_DEFINITIONS
-from pilot.contract import INTERFACE_VERSION, contract_for_question, json_schema
+from student.agent import MODEL_CACHE, MODEL_ID, MODEL_REVISION, SYSTEM_PROMPT, Settings, TransformersModel, run_agent
+from student.scoring import score_episode
+from student.tools import TOOL_DEFINITIONS
+from student.contract import INTERFACE_VERSION, contract_for_question, json_schema
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +33,7 @@ def select_questions(rows, per_family=4, seed=4880):
         raise ValueError("Training questions must cover all current families")
     selected = []
     for family in sorted(groups):
+        # The seed string is kept verbatim: changing it would change which questions are selected.
         group = sorted(groups[family], key=lambda row: digest([seed, "zero-shot-pilot", row["id"]]))
         positives = [r for r in group if not negative(r["ground_truth_answer"], family)]
         negatives = [r for r in group if negative(r["ground_truth_answer"], family)]
@@ -77,9 +78,9 @@ def summarize(records):
             "statuses": dict(Counter(r["status"] for r in records))}
 
 
-def execute_pilot(rows, client, model, settings, output, dataset, replace=False, source_id=None):
+def execute_run(rows, client, model, settings, output, dataset, replace=False, source_id=None):
     if not rows or any(row["split"] != "train" for row in rows):
-        raise ValueError("The initial pilot uses training questions only")
+        raise ValueError("Zero-shot runs use training questions only")
     contracts = {}
     for row in rows:
         name, shape = contract_for_question(row["question"])
@@ -95,7 +96,7 @@ def execute_pilot(rows, client, model, settings, output, dataset, replace=False,
               "public_answer_contracts": contracts,
               "tool_schema_policy": "Identical tools for every question; the selected answer schema appears once, in the user message",
               "code_sha256": {str(p.relative_to(ROOT)): file_digest(p) for p in
-                  [ROOT / "pilot" / name for name in ("agent.py", "tools.py", "contract.py", "run.py", "scoring.py")]
+                  [ROOT / "student" / name for name in ("agent.py", "tools.py", "contract.py", "run.py", "scoring.py")]
                   + [ROOT / "dataset/fhir.py"]}}
     light_records = []
     client.strict_search = True
@@ -104,7 +105,7 @@ def execute_pilot(rows, client, model, settings, output, dataset, replace=False,
         handle.flush()
         try:
             for index, row in enumerate(rows, 1):
-                print(f"Pilot {index}/{len(rows)}: {row['family']} ({row['complexity']})", flush=True)
+                print(f"Episode {index}/{len(rows)}: {row['family']} ({row['complexity']})", flush=True)
                 seed = (settings.seed + int(digest(row["id"])[:8], 16)) % 2**32
                 # Do not pass IDs, families, operations, labels, or oracles to the agent.
                 episode = run_agent(row["question"], row["patient_id"], model, client, settings, seed)
@@ -131,7 +132,7 @@ def prepare_model():
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
-        raise ValueError("Install pilot dependencies using bash scripts/prepare_pilot.sh") from exc
+        raise ValueError("Install model dependencies using bash scripts/prepare_model.sh") from exc
     path = snapshot_download(MODEL_ID, revision=MODEL_REVISION, cache_dir=str(MODEL_CACHE))
     print(f"Prepared pinned checkpoint: {path}", flush=True)
 
@@ -140,8 +141,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("plan", "prepare", "run", "summarize"))
     parser.add_argument("--dataset", type=Path, default=ROOT / "data/processed/cohort-200")
-    parser.add_argument("--output", type=Path, default=ROOT / "outputs/pilot.jsonl")
-    parser.add_argument("--replace", action="store_true", help="Replace the single current pilot result file")
+    parser.add_argument("--output", type=Path, default=ROOT / "outputs/zero-shot.jsonl")
+    parser.add_argument("--replace", action="store_true", help="Replace an existing result file")
     parser.add_argument("--per-family", type=int, default=4)
     parser.add_argument("--seed", type=int, default=4880)
     parser.add_argument("--model-path", type=Path, help="Optional existing local checkpoint; otherwise use the pinned official model")
@@ -167,15 +168,15 @@ def main():
         if args.action == "plan":
             return
         if args.output.exists() and not args.replace:
-            raise ValueError(f"Pilot output exists: {args.output}; use --replace to update the current result")
+            raise ValueError(f"Output exists: {args.output}; use --replace to update it")
         if args.output.resolve() == args.dataset.resolve() or args.dataset.resolve() in args.output.resolve().parents:
-            raise ValueError("Pilot output must be outside the processed dataset directory")
+            raise ValueError("Output must be outside the processed dataset directory")
         settings = Settings(max_steps=args.max_steps, max_tool_calls=args.max_tool_calls,
                             max_context_tokens=args.max_context_tokens, max_new_tokens=args.max_new_tokens,
                             max_output_tokens=args.max_output_tokens, seed=args.seed)
         model = TransformersModel(settings, args.model_path)
         def after_verify(client, selected, snapshot):
-            execute_pilot(selected, client, model, settings, args.output, args.dataset,
+            execute_run(selected, client, model, settings, args.output, args.dataset,
                           replace=args.replace, source_id=snapshot.id)
         # Reuse verification's isolated HAPI/PostgreSQL lifecycle. Its operational
         # files remain temporary; the only persistent experiment artifact is JSONL.

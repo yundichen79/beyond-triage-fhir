@@ -170,7 +170,7 @@ def interrupt_cleanup():
 
 
 def run_job(args, *, rows=None, after_verify=None):
-    """Own the live server lifecycle; an optional pilot runs before cleanup."""
+    """Own the live server lifecycle; an optional agent run happens before cleanup."""
     # This command owns its output and temporary database; refuse accidental reruns.
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -275,9 +275,9 @@ def run_job(args, *, rows=None, after_verify=None):
         if not report["valid"]:
             raise ValueError("Live FHIR verification failed; see verification.json")
         if after_verify is not None:
-            status.update({"status": getattr(args, "callback_status", "running_pilot"), "live_verification_passed": True})
+            status.update({"status": getattr(args, "callback_status", "running_student"), "live_verification_passed": True})
             write_json(output / "status.json", status)
-            print("Selected charts verified; starting " + getattr(args, "callback_label", "zero-shot agent pilot"), flush=True)
+            print("Selected charts verified; starting " + getattr(args, "callback_label", "zero-shot student run"), flush=True)
             after_verify(client, rows, snapshot)
         status.update({"status": "passed", "passed": True,
                        "questions_checked": report["questions_checked"],

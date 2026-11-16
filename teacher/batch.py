@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 from dataset.common import digest, file_digest
 from dataset.live import interrupt_cleanup, run_job
-from pilot.agent import MODEL_CACHE, MODEL_ID, MODEL_REVISION, Settings, run_agent
-from pilot.scoring import score_episode
+from student.agent import MODEL_CACHE, MODEL_ID, MODEL_REVISION, Settings, run_agent
+from student.scoring import score_episode
 from teacher.bridge import FileTeacher, atomic_json
 from teacher.prepare import ROOT, opaque_id, public_episode
 
@@ -170,7 +170,7 @@ def select_rows(rows, previous=(), limit=None):
     training = {opaque_id(row): row for row in rows if row['split'] == 'train'}
     done = set()
     for directory in previous:
-        # Both the original one-question pilot and batch attempts use provenance.json.
+        # The first interactive attempt and batch attempts both use provenance.json.
         paths = [directory / 'provenance.json']
         paths += sorted((directory / 'attempts').glob('*/provenance.json'))
         for path in paths:
@@ -425,7 +425,7 @@ def main():
         'code_sha256': {str(p.relative_to(ROOT)): file_digest(p) for p in
             [ROOT / name for name in ('teacher/batch.py', 'teacher/bridge.py', 'teacher/client.py',
                                      'teacher/TEACHER.md',
-                                     'pilot/agent.py', 'pilot/tools.py', 'pilot/contract.py')]}})
+                                     'student/agent.py', 'student/tools.py', 'student/contract.py')]}})
 
     def after_verify(client, selected_rows, snapshot):
         client.strict_search = True

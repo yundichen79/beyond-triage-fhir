@@ -2,7 +2,7 @@
 
 Detailed reference for the questions generated for Beyond TRIAGE-FHIR.
 See the [project README](../README.md) for the experiment, dataset construction,
-live verification, and pilot commands.
+live verification, and agent commands.
 
 ## Cohort and files
 
@@ -286,9 +286,9 @@ Local validation, raw-bundle replay, and clinical review passed for this cohort.
 Replay uses the same oracle; live FHIR verification and actual model execution
 remain separate checks; current run status is described in the project README.
 
-The zero-shot pilot selects 56 training questions from 44 patients, four per family,
+The zero-shot runner selects 56 training questions from 44 patients, four per family,
 including eight primary negatives. Agent episodes, scores, and token/tool metrics
-go to `outputs/pilot.jsonl`, outside this dataset. QA rows are not SFT trajectories:
+go to `outputs/zero-shot.jsonl`, outside this dataset. QA rows are not SFT trajectories:
 SFT requires actual tool interactions, checked answers, adequate retrieved/cited
 evidence, and review of unfinished searches and selection logic.
 

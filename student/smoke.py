@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from dataset.common import file_digest, read_questions, resource_id, timestamp, write_json
 from dataset.live import interrupt_cleanup, now, run_job
-from pilot.contract import INTERFACE_VERSION
-from pilot.tools import MAX_COUNT, PatientTools
+from student.contract import INTERFACE_VERSION
+from student.tools import MAX_COUNT, PatientTools
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +68,7 @@ def check_queries(client, rows, snapshot, output):
               "model_generation": False, "started_at": now(), "patient": patient,
               "source_snapshot_id": snapshot.id, "passed": False, "checks": [],
               "code_sha256": {str(p.relative_to(ROOT)): file_digest(p) for p in
-                  (ROOT / "pilot/smoke.py", ROOT / "pilot/tools.py", ROOT / "pilot/contract.py",
+                  (ROOT / "student/smoke.py", ROOT / "student/tools.py", ROOT / "student/contract.py",
                    ROOT / "dataset/fhir.py", ROOT / "dataset/live.py")}}
 
     def save():

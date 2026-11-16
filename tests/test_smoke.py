@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 from dataset.common import Snapshot
 from dataset.fhir import FHIR
 from dataset.questions import build_questions
-from pilot.smoke import check_queries, select_patient_rows
+from student.smoke import check_queries, select_patient_rows
 from fhir_fixture import search
 from test_dataset import fixture, config
 

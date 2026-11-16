@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 import shutil
 
-from pilot.agent import MODEL_REVISION, SYSTEM_PROMPT, Settings
-from pilot.contract import INTERFACE_VERSION, contract_for_question, json_schema
-from pilot.tools import tool_definitions
+from student.agent import MODEL_REVISION, SYSTEM_PROMPT, Settings
+from student.contract import INTERFACE_VERSION, contract_for_question, json_schema
+from student.tools import tool_definitions
 
 ROOT = Path(__file__).resolve().parents[1]
 

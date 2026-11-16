@@ -8,6 +8,21 @@ from pathlib import Path
 from teacher.bridge import atomic_json
 
 
+# Runs recorded before the renames list these files under their old paths.
+OLD_PATHS = {'student/': 'pilot/', 'teacher/TEACHER.md': 'teacher_workspace/TEACHER.md'}
+
+
+def code_hash(manifest, name):
+    """A file's hash in a run manifest, accepting the path it had before a rename."""
+    code = manifest.get('code_sha256', {})
+    if name in code:
+        return code[name]
+    for new, old in OLD_PATHS.items():
+        if name.startswith(new):
+            return code.get(old + name[len(new):])
+    return None
+
+
 def events(path):
     if not path.exists():
         return
@@ -113,8 +128,8 @@ def report(output, baseline=None):
     if previous['dataset_sha256'] != manifest['dataset_sha256']:
         raise ValueError('Baseline and comparison datasets differ')
     comparability = {'student_settings_equal': previous['settings'] == manifest['settings'],
-        'code_equal': {name: previous['code_sha256'].get(name) == manifest['code_sha256'].get(name)
-            for name in ('pilot/agent.py', 'pilot/tools.py', 'pilot/contract.py',
+        'code_equal': {name: code_hash(previous, name) == code_hash(manifest, name)
+            for name in ('student/agent.py', 'student/tools.py', 'student/contract.py',
                          'teacher/bridge.py', 'teacher/client.py', 'teacher/TEACHER.md')}}
     records = {}
     old_records = {}
