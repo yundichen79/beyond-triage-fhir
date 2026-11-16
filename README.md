@@ -42,14 +42,21 @@ The dataset has **1,202 questions across 14 clinical chart-review families**, wi
 exclusive record cutoff of **2026-10-02 UTC**. Tasks cover encounter-linked conditions
 and orders, CBC and blood pressure, documented indications, medication comparisons and
 longitudinal follow-up. Every answer is computed by deterministic rules, with explicit
-time windows, units and supporting resource references. Difficulty labels are
-provisional: 499 simple, 548 intermediate, 155 complex.
+time windows, units and supporting resource references.
 
 | Split | Patients | Questions |
 | --- | ---: | ---: |
 | Train | 151 | 899 |
 | Validation | 22 | 145 |
 | Test | 27 | 158 |
+
+Difficulty is a provisional label assigned per family:
+
+| Difficulty | Families | Train | Validation | Test | Total |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Simple | `cbc_panel`, `inpatient_conditions`, `inpatient_medications`, `outpatient_bp` | 374 | 59 | 66 | 499 |
+| Intermediate | `admission_medication_comparison`, `cbc_change`, `discharge_followup`, `medication_indications`, `preadmission_treated_conditions`, `procedure_indications` | 406 | 68 | 74 | 548 |
+| Complex | `followup_medication_comparison`, `glycemic_followup`, `renal_followup`, `subsequent_admission` | 119 | 18 | 18 | 155 |
 
 All questions for a patient stay in the same split. Only two processed files are kept,
 in `data/processed/cohort-200/`:
@@ -150,8 +157,14 @@ temperature 0.7, seed 4880, on an A40):
 | Hit the step limit | 10 | 5 |
 | Mean tool calls per question | 8.7 | 7.8 |
 
-- **By difficulty (grounded):** simple 14/59 and 12/66; intermediate 2/68 and 1/74;
-  complex 1/18 and 2/18 (validation and test).
+By difficulty:
+
+| Difficulty | Validation grounded | Test grounded |
+| --- | ---: | ---: |
+| Simple | 14 / 59 (23.7%) | 12 / 66 (18.2%) |
+| Intermediate | 2 / 68 (2.9%) | 1 / 74 (1.4%) |
+| Complex | 1 / 18 (5.6%) | 2 / 18 (11.1%) |
+
 - **Missing-record cases:** 3/12 and 3/6 grounded.
 - **By family:** nearly all successes are CBC panel questions (13/22 and 11/27).
   Outpatient blood pressure, medication indications and procedure indications score
