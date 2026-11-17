@@ -282,29 +282,101 @@ it to read them.
 
 ## SFT training
 
-`sft/train.py` fine-tunes Qwen3-8B with LoRA on one data variant:
-- **Loss:** completion tokens only. Predictions are computed only for those positions,
-  which keeps memory low on prompts of up to about 14K tokens.
-- **Setup:** bf16 weights, LoRA on every attention and MLP projection, gradient
-  checkpointing.
-- **Defaults:** 2 epochs, learning rate 1e-4 with warmup and cosine decay, 16 examples
-  per optimizer step (138 steps in total), LoRA rank 16 / alpha 32.
+`sft/train.py` fine-tunes Qwen3-8B with LoRA on one SFT data variant. Clean and
+recovery runs use identical settings; only the data differs.
 
-Each run writes, to a new folder under `outputs/sft-runs/`:
-- `train-config.json`: settings, data fingerprints and library versions
-- `train-log.jsonl`: training and dev losses
+### Training examples
+
+Each example is one assistant turn of a teacher trajectory:
+- a prompt $x = (x_1, \dots, x_m)$: everything the student sees before that turn
+  (instructions, tools, question, earlier calls and tool results)
+- a completion $y = (y_1, \dots, y_n)$: the teacher's turn in Qwen's `<tool_call>`
+  format, ending with `<|im_end|>`
+
+Prompts are long and completions short: the median example has about 4,200 tokens, of
+which about 100 are completion. The longest example has 14,269 tokens. Examples are
+not padded or packed: each is processed on its own.
+
+### Model: LoRA
+
+The base model's weights stay frozen in bf16. Every adapted weight matrix
+$W \in \mathbb{R}^{d_{out} \times d_{in}}$ gets a trainable low-rank update:
+
+$$W' = W + \frac{\alpha}{r}\, B A, \qquad A \in \mathbb{R}^{r \times d_{in}},\; B \in \mathbb{R}^{d_{out} \times r}$$
+
+- **Rank and scaling:** $r = 16$ and $\alpha = 32$, so the update is scaled by 2.
+- **Dropout:** 0.05 on the LoRA input.
+- **Start:** $B$ starts at zero, so training begins from the unchanged base model.
+- **Where:** all seven projections in each of the 36 transformer blocks: attention
+  `q_proj`, `k_proj`, `v_proj`, `o_proj` and MLP `gate_proj`, `up_proj`,
+  `down_proj`.
+- **Size:** 43.6M trainable parameters, about 0.5% of the model. Each saved adapter
+  (`epoch-<n>/`) is loaded on top of the unchanged base model.
+
+### Loss
+
+Next-token cross-entropy on completion tokens only; prompt tokens are context and add
+nothing to the loss. For example $i$, with parameters $\theta$:
+
+$$\mathcal{L}_i(\theta) = -\sum_{t=1}^{n_i} \log p_\theta\!\left(y^{(i)}_t \,\middle|\, x^{(i)}, y^{(i)}_{<t}\right)$$
+
+Each optimizer step uses a batch $\mathcal{B}$ of 16 examples and takes the mean over
+all their completion tokens, so longer completions count proportionally more:
+
+$$\mathcal{L}_{\mathcal{B}}(\theta) = \frac{1}{\sum_{i \in \mathcal{B}} n_i} \sum_{i \in \mathcal{B}} \mathcal{L}_i(\theta)$$
+
+Only the hidden states at completion positions go through the output layer. With
+prompts of up to about 14K tokens and a vocabulary of about 152K entries, full logits
+would waste most of the GPU memory.
+
+### Optimization
+
+AdamW with peak learning rate $\eta_{\max} = 10^{-4}$ and no weight decay. The learning
+rate at step $s$ (of $S = 138$, with $w = 4$ warmup steps) is:
+
+$$\eta_s = \begin{cases} \eta_{\max} \cdot \dfrac{s}{w} & s < w \\[2ex] \eta_{\max} \cdot \dfrac{1}{2}\left(1 + \cos\!\left(\pi \dfrac{s - w}{S - w}\right)\right) & s \ge w \end{cases}$$
+
+Gradients are clipped to a global norm of $c = 1.0$ before each update:
+
+$$g \leftarrow g \cdot \min\!\left(1, \frac{c}{\lVert g \rVert_2}\right)$$
+
+| Setting | Value |
+| --- | --- |
+| Epochs | 2, reshuffled each epoch (seed 4880) |
+| Examples per optimizer step | 16, accumulated one example at a time |
+| Optimizer steps | 69 per epoch, 138 in total |
+| Warmup | 3% of steps (4) |
+| Gradient checkpointing | On, non-reentrant |
+| Maximum example length | 16,384 tokens |
+| Dev loss | Every 50 steps and at each epoch end, on the dev patients |
+| Hardware | One A40 or L40S (48 GB); about 27 GB peak and about 6.5 hours per run on an A40 |
+
+The epoch and data variant are chosen by running each adapter as an agent on the
+validation split, not by dev loss. Dev loss mostly measures how well the model
+reproduces easy tokens (JSON syntax, tool names, IDs copied from context), while
+success depends on a few decision tokens.
+
+### Running
+
+```bash
+sbatch scripts/train_sft.sbatch --data outputs/sft-data/<variant> --output outputs/sft-runs/<run>
+```
+
+Settings can be overridden on the command line, for example `--epochs 3
+--learning-rate 5e-5 --lora-r 32`. Each run writes to a new folder:
+- `train-config.json`: settings, data fingerprints, library versions and GPU
+- `train-log.jsonl`: training loss, gradient norm and learning rate per step, and dev
+  loss
 - `epoch-<n>/`: one adapter per epoch
 
-The smoke test (`--smoke`, 2 steps on the 16 longest examples) passed on an A40. Peak
-GPU memory was 26.7 GB of 48 GB, training and dev loss decreased, and the adapter
-saved. Each step of 8 longest examples took about 5.6 minutes, so a full 2-epoch run is
-estimated at 6–9 hours on an A40.
+Two checks run before a full run:
+- **`--dry-run`:** checks the data and tokenization without a GPU. Every prompt and
+  completion must tokenize the same apart as joined, so the model trains on exactly
+  the tokens it generates.
+- **`--smoke`:** trains 2 steps on the 16 longest examples to check peak memory and
+  adapter saving.
 
-`--dry-run` checks the data and tokenization without a GPU. It passed on both
-variants: every prompt and completion tokenizes the same apart as joined, and the
-longest example is 14,269 tokens. `--smoke` runs 2 steps on the longest examples.
-`scripts/train_sft.sbatch` launches training on one A40 or L40S (up to 24 hours, free
-tier).
+`scripts/train_sft.sbatch` runs on the free `gpu` tier, up to 24 hours.
 
 ## Scoring
 
