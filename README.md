@@ -25,8 +25,8 @@ the [teacher guide](teacher/README.md) for trajectory generation.
 | 3. Student environment | `student/` | Used live in every teacher episode |
 | 4. Teacher trajectories | `teacher/` | Done for now: Claude Sonnet 5.5 (high effort), 306 grounded trajectories for 318 of 899 training questions |
 | 5. SFT data | `sft/data.py` | Done: clean (1,179 examples) and recovery (1,171) variants |
-| 6. SFT training | `sft/train.py` | GPU smoke test passed (peak 26.7 GB on an A40); clean and recovery runs submitted |
-| 7. Baselines and evaluation | `student/run.py` | Zero-shot Qwen3-8B done: 11.7% grounded on validation, 9.5% on test. Fixed-workflow baseline and SFT evaluation outstanding |
+| 6. SFT training | `sft/train.py` | Done: clean and recovery variants, 2 epochs each |
+| 7. Baselines and evaluation | `student/run.py` | Test, grounded: zero-shot 9.5%, SFT 60.1% (recovery, epoch 2, chosen on validation). Fixed-workflow baseline outstanding |
 
 The [next steps](#next-steps) section lists what remains.
 
@@ -142,46 +142,133 @@ python3 -m student.run summarize --output outputs/zero-shot-v6-test.jsonl
   and logs to `logs/student-<job-id>.log`.
 `sbatch scripts/verify_student_queries.sbatch` reruns the live query checks.
 
-## Zero-shot baseline
+## Results
 
-Qwen3-8B without fine-tuning, on every validation and test question (one sampled run,
-temperature 0.7, seed 4880, on an A40):
+Every system answers in the same environment with the same tools and budgets. Each
+result is one sampled run (temperature 0.7, seed 4880) on an A40. *Grounded* means the
+answer is correct and all required evidence was retrieved and cited. Confidence
+intervals are 95% patient-level bootstrap intervals of paired differences: both systems
+on the same questions, resampling patients (4,000 draws). The figures are produced by
+[`notebooks/results.ipynb`](notebooks/results.ipynb) and saved in `docs/figures/`.
 
-| | Validation (145) | Test (158) |
-| --- | ---: | ---: |
-| Correct | 17 (11.7%) | 17 (10.8%) |
-| Grounded (correct with all required evidence) | 17 (11.7%) | 15 (9.5%) |
-| Submitted an answer | 45 | 45 |
-| Ran out of context | 45 | 54 |
-| Stopped for repeating a failed action | 45 | 54 |
-| Hit the step limit | 10 | 5 |
-| Mean tool calls per question | 8.7 | 7.8 |
+### Test (158 questions)
 
-By difficulty:
+| System | Grounded | Correct | Macro (mean over families) | Submitted an answer | Tool calls / question | Input tokens / question | Seconds / question |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Zero-shot Qwen3-8B | 15 (9.5%) | 17 (10.8%) | 8.8% | 45 | 7.8 | 55,621 | 47 |
+| SFT, clean data, epoch 2 | 91 (57.6%) | 91 (57.6%) | 30.6% | 146 | 4.2 | 23,141 | 37 |
+| **SFT, recovery data, epoch 2** (chosen on validation) | **95 (60.1%)** | **95 (60.1%)** | **40.8%** | 146 | 4.2 | 23,378 | 40 |
 
-| Difficulty | Validation grounded | Test grounded |
-| --- | ---: | ---: |
-| Simple | 14 / 59 (23.7%) | 12 / 66 (18.2%) |
-| Intermediate | 2 / 68 (2.9%) | 1 / 74 (1.4%) |
-| Complex | 1 / 18 (5.6%) | 2 / 18 (11.1%) |
+| Comparison (grounded) | Questions only one side solved | Difference | 95% CI |
+| --- | --- | ---: | --- |
+| SFT recovery vs zero-shot | 80 vs 0 | +50.6 points | +43.7 to +58.0 |
+| SFT clean vs zero-shot | 77 vs 1 | +48.1 points | +40.4 to +57.6 |
+| SFT recovery vs SFT clean | 9 vs 5 | +2.5 points | −2.7 to +7.6 |
 
-- **Missing-record cases:** 3/12 and 3/6 grounded.
-- **By family:** nearly all successes are CBC panel questions (13/22 and 11/27).
-  Outpatient blood pressure, medication indications and procedure indications score
-  zero on both splits.
+![Test grounded accuracy with 95% confidence intervals](docs/figures/1-test-accuracy.png)
 
-Main failure causes:
+![Paired differences in test grounded accuracy](docs/figures/2-test-paired-differences.png)
+
+By difficulty, grounded (tool calls per question in brackets):
+
+| System | Simple (66) | Intermediate (74) | Complex (18) | Missing-record cases (6) |
+| --- | ---: | ---: | ---: | ---: |
+| Zero-shot | 12 (7.5) | 1 (7.5) | 2 (10.4) | 3 |
+| SFT clean | 61 (2.8) | 28 (5.3) | 2 (5.0) | 2 |
+| SFT recovery | 61 (2.9) | 31 (5.0) | 3 (5.3) | 5 |
+
+![Test grounded accuracy by difficulty](docs/figures/3-test-by-difficulty.png)
+
+By family, grounded / questions:
+
+| Family | Zero-shot | SFT clean | SFT recovery |
+| --- | ---: | ---: | ---: |
+| `cbc_panel` | 11/27 | 27/27 | 27/27 |
+| `outpatient_bp` | 0/27 | 25/27 | 23/27 |
+| `medication_indications` | 0/26 | 18/26 | 17/26 |
+| `procedure_indications` | 0/26 | 9/26 | 11/26 |
+| `inpatient_conditions` | 1/10 | 9/10 | 10/10 |
+| `subsequent_admission` | 2/9 | 2/9 | 2/9 |
+| `discharge_followup` | 0/8 | 0/8 | 0/8 |
+| `cbc_change` | 0/7 | 0/7 | 0/7 |
+| `renal_followup` | 0/6 | 0/6 | 1/6 |
+| `preadmission_treated_conditions` | 0/5 | 1/5 | 2/5 |
+| `admission_medication_comparison` | 1/2 | 0/2 | 1/2 |
+| `inpatient_medications` | 0/2 | 0/2 | 1/2 |
+| `followup_medication_comparison` | 0/2 | 0/2 | 0/2 |
+| `glycemic_followup` | 0/1 | 0/1 | 0/1 |
+
+![Test grounded accuracy by family](docs/figures/4-test-by-family.png)
+
+- **SFT improves grounded accuracy by about 50 points.** Every question zero-shot
+  solved, recovery SFT also solved; it solved 80 more.
+- **SFT halves the effort:** 4.2 instead of 7.8 tool calls, and 58% fewer input tokens.
+  Effort now grows with difficulty (about 3 calls on simple questions, about 5 on
+  harder ones), while zero-shot spent about 7.5 calls even on simple questions.
+- **Recovery vs clean is not significant overall.** Recovery's higher macro accuracy
+  and missing-record count come from a handful of questions in small families.
+- **Remaining failures:**
+  - complex questions: 3 of 18
+  - `cbc_change`, `discharge_followup` and `subsequent_admission`, which stay at or
+    near zero in every system
+
+![Test effort: tool calls by difficulty and input tokens per question](docs/figures/5-test-effort.png)
+
+### Validation (145 questions): choosing the SFT model
+
+| System | Grounded | Submitted an answer | Context limit | Repeated failure | Tool calls / question |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Zero-shot | 17 (11.7%) | 45 | 45 | 45 | 8.7 |
+| SFT clean, epoch 1 | 75 (51.7%) | 130 | 4 | 11 | 4.8 |
+| SFT clean, epoch 2 | 80 (55.2%) | 135 | 3 | 7 | 4.7 |
+| SFT recovery, epoch 1 | 69 (47.6%) | 135 | 0 | 10 | 3.4 |
+| **SFT recovery, epoch 2** | **84 (57.9%)** | 136 | 5 | 4 | 4.4 |
+
+The rule was to take the highest validation grounded accuracy: recovery data, epoch 2.
+It scored 57.9% on validation and 60.1% on test, so selection did not noticeably inflate
+the result.
+
+| Comparison (grounded) | Difference | 95% CI |
+| --- | ---: | --- |
+| Recovery epoch 2 vs recovery epoch 1 | +10.3 points | +5.0 to +15.9 |
+| Clean epoch 2 vs clean epoch 1 | +3.4 points | −3.1 to +10.2 |
+| Recovery epoch 2 vs clean epoch 2 | +2.8 points | −2.2 to +7.6 |
+
+![Validation grounded accuracy of the candidate models](docs/figures/7-validation-selection.png)
+
+### How zero-shot fails
+
+Zero-shot submits an answer in only 45 of about 150 episodes. The rest end in two ways:
 - **Invalid searches repeated until the episode stops.** Most often an `encounter`
   filter that is not an encounter ID, such as a class code (26 validation and 29 test
-  episodes). Then arguments outside `params` (7 / 9), and malformed tool-call JSON.
-  Three validation and eight test episodes never made a valid tool call.
-- **Running out of context** after a median of only 6 tool calls: broad searches,
-  without narrowing filters, fill the 16K-token budget.
+  episodes). Then arguments outside `params`, and malformed tool-call JSON.
+- **Running out of context** after a median of only 6 tool calls, because broad
+  searches fill the 16K-token budget.
 
-On the same interface the teacher solved about 96% of its training questions. The
-baseline's most common error, an invalid `encounter` filter, is the error the teacher
-corrected 31 times in the recovery data. Results are in
-`outputs/zero-shot-v6-{validation,test}.jsonl`.
+After SFT, these protocol failures nearly disappear: 146 of 158 test episodes submit an
+answer, and most remaining misses are wrong answers. The teacher corrected the
+invalid-`encounter` error 31 times in the recovery data.
+
+![How test episodes ended](docs/figures/6-test-outcomes.png)
+
+### Training curves
+
+Both LoRA runs trained for 138 optimizer steps (2 epochs) without instability:
+- **Training loss** fell from about 0.35 to about 0.03 during the first epoch, most of
+  it in the first 20 steps, and to about 0.02 in the second.
+- **Dev loss** (completion tokens, dev patients) decreased at every evaluation, from
+  0.27–0.29 before training to 0.018 (recovery) and 0.021 (clean) after epoch 2, with no
+  sign of overfitting.
+
+The two dev sets differ slightly, so their losses are not directly comparable.
+
+![Training and dev loss of the two LoRA runs](docs/figures/8-training-curves.png)
+
+Result files: `outputs/zero-shot-v6-{validation,test}.jsonl`,
+`outputs/sft-{clean,recovery}-e{1,2}-validation.jsonl`,
+`outputs/sft-{clean,recovery}-e2-test.jsonl`, and the training logs in
+`outputs/sft-runs/*/train-log.jsonl`. Rerun `notebooks/results.ipynb` (with the project
+`.venv` as kernel) to regenerate the figures.
 
 ## Teacher trajectories
 
@@ -392,43 +479,30 @@ Two checks run before a full run:
 
 ## Next steps
 
-1. **Spot-check the SFT data** while training runs. Read a few selected trajectories
-   per family for invented filters, wrong anchors and unsupported missing-record
-   claims. Grounding is checked automatically; search quality is not.
-2. **Train both variants (running)** with the default settings: 2 epochs, learning rate 1e-4,
-   LoRA rank 16, 16 examples per step. That's one model on the clean data and one on
-   the recovery data, giving the clean-versus-recovery ablation:
-   ```bash
-   sbatch scripts/train_sft.sbatch --data outputs/sft-data/sonnet55-v6-20261116-recovery \
-     --output outputs/sft-runs/recovery-r16-lr1e-4
-   sbatch scripts/train_sft.sbatch --data outputs/sft-data/sonnet55-v6-20261116 \
-     --output outputs/sft-runs/clean-r16-lr1e-4
-   ```
-3. **Choose settings on the validation split.** Run each epoch's adapter on all 145
-   validation questions and pick the variant and epoch by grounded accuracy. Try
-   another learning rate or epoch count only if validation suggests it.
-   ```bash
-   sbatch scripts/run_student.sbatch --split validation \
-     --adapter outputs/sft-runs/recovery-r16-lr1e-4/epoch-2 --output outputs/sft-recovery-e2-validation.jsonl
-   ```
-4. **Fixed-workflow baseline.** Port the TRIAGE-FHIR workflow onto the same environment,
-   tools and budgets.
-5. **Final test evaluation.** Freeze the chosen SFT settings, then run all three
-   systems on the 158 test questions. Compare:
-   - accuracy, grounded accuracy and per-family (macro) accuracy
-   - tool calls and tokens, and effort by difficulty
-   - with patient-level bootstrap confidence intervals
+1. **Fixed-workflow baseline.** Port the TRIAGE-FHIR workflow onto the same environment,
+   tools and budgets, then run it on the test split for the three-way comparison.
+2. **Error analysis.** Read transcripts for the families SFT still misses
+   (`cbc_change`, `discharge_followup`, `subsequent_admission`) and for complex
+   questions. Note whether the failure is the search strategy, the answer construction
+   or a lack of training trajectories.
+3. **Spot-check the SFT data.** Read a few selected trajectories per family for invented
+   filters, wrong anchors and unsupported missing-record claims. Grounding is checked
+   automatically; search quality is not.
+4. **Optional, if time allows:**
+   - **Variance:** rerun the chosen SFT model and zero-shot with another seed to
+     estimate run-to-run variance.
+   - **Data:** top up the thin families with more teacher trajectories (about 50
+     questions, under one usage window).
 
-   Each system is one sampled run (temperature 0.7, seed 4880); say so in the report.
-6. **Report.** State the limitations:
+   Any retraining must be chosen on validation again before rerunning test.
+5. **Report.** State the limitations:
    - synthetic data
+   - one sampled run per system
    - a partial corpus (318 of 899 training questions)
    - the `followup_medication_comparison` issues
    - teacher model identity taken from the requested model name, not a returned
      fingerprint
    - disclose the AI-generated trajectories
-
-   Optional: top up the thin families (about 50 questions, under one usage window).
 
 ## Repository layout
 
